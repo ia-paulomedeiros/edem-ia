@@ -35,8 +35,10 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
 
 ## Como aplicar no Supabase
 
-1. SQL Editor: rodar `supabase/001_schema.sql`, depois `002_dominio_juridico.sql`, depois
-   `003_caso_unico.sql`. Todas são idempotentes; nunca editar uma já aplicada.
+1. SQL Editor: colar `supabase/apply_all.sql` (as três migrations juntas) e executar. Ou rodar
+   `001_schema.sql`, `002_dominio_juridico.sql` e `003_caso_unico.sql` nessa ordem. Todas são
+   idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir das três
+   (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
 2. Vault: criar o segredo com o token permanente da Meta (ex.: nome `wa_token_<escritorio>`).
 3. Cadastrar escritório, membro e número:
    ```sql
