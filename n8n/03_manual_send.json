@@ -1,0 +1,94 @@
+{
+  "name": "WA 03 — Envio manual (reage à linha em messages)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "supabase/messages",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000001",
+      "name": "Webhook (Supabase Database Webhook: INSERT em messages)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "supabase-messages"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "id": "s0", "leftValue": "={{ $json.headers['x-webhook-secret'] }}", "rightValue": "={{ $env.SUPABASE_WEBHOOK_SECRET }}", "operator": { "type": "string", "operation": "equals" } },
+            { "id": "s1", "leftValue": "={{ $json.body.type }}", "rightValue": "INSERT", "operator": { "type": "string", "operation": "equals" } },
+            { "id": "s2", "leftValue": "={{ $json.body.record.direction }}", "rightValue": "out", "operator": { "type": "string", "operation": "equals" } },
+            { "id": "s3", "leftValue": "={{ $json.body.record.sender }}", "rightValue": "humano", "operator": { "type": "string", "operation": "equals" } },
+            { "id": "s4", "leftValue": "={{ $json.body.record.status }}", "rightValue": "pending", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000002",
+      "name": "Mensagem manual pendente?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select m.id as message_id, m.body, ct.wa_id, wn.phone_number_id, s.decrypted_secret as token\nfrom public.messages m\njoin public.conversations c on c.id = m.conversation_id\njoin public.contacts ct on ct.id = c.contact_id\njoin public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id\nleft join vault.decrypted_secrets s on s.name = wn.token_secret_name\nwhere m.id = $1 and m.status = 'pending';",
+        "options": { "queryReplacement": "={{ $json.body.record.id }}" }
+      },
+      "id": "c3000000-0000-4000-8000-000000000003",
+      "name": "Destino + token do Vault",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [480, -100],
+      "credentials": { "postgres": { "id": "", "name": "Supabase (service_role)" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $json.phone_number_id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $json.token }}" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.wa_id, type: 'text', text: { body: $json.body } }) }}",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000004",
+      "name": "Graph API: enviar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, -100],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update public.messages\n   set status = case when $2 is null then 'failed' else 'sent' end,\n       wa_message_id = $2,\n       error = $3\n where id = $1;",
+        "options": { "queryReplacement": "={{ $('Destino + token do Vault').item.json.message_id }}, {{ $json.messages?.[0]?.id ?? null }}, {{ $json.error ? JSON.stringify($json.error).slice(0, 500) : null }}" }
+      },
+      "id": "c3000000-0000-4000-8000-000000000005",
+      "name": "Marcar enviada / falha",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [960, -100],
+      "credentials": { "postgres": { "id": "", "name": "Supabase (service_role)" } }
+    }
+  ],
+  "connections": {
+    "Webhook (Supabase Database Webhook: INSERT em messages)": { "main": [[{ "node": "Mensagem manual pendente?", "type": "main", "index": 0 }]] },
+    "Mensagem manual pendente?": { "main": [[{ "node": "Destino + token do Vault", "type": "main", "index": 0 }], []] },
+    "Destino + token do Vault": { "main": [[{ "node": "Graph API: enviar", "type": "main", "index": 0 }]] },
+    "Graph API: enviar": { "main": [[{ "node": "Marcar enviada / falha", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": {
+    "notes": "No Supabase: Database > Webhooks > nova: tabela public.messages, evento INSERT, URL = <n8n>/webhook/supabase/messages, header x-webhook-secret = SUPABASE_WEBHOOK_SECRET (env do n8n). A UI nunca chama a Graph API: ela só cria a linha (send_manual_message)."
+  }
+}

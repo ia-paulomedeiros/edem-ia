@@ -1,0 +1,84 @@
+{
+  "name": "WA 01 — Verificação do webhook (Meta)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1c0f1e0-0000-4000-8000-000000000001",
+      "name": "Webhook GET /whatsapp",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "whatsapp-verify"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.query['hub.mode'] }}",
+              "rightValue": "subscribe",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.query['hub.verify_token'] }}",
+              "rightValue": "={{ $env.WA_VERIFY_TOKEN }}",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1c0f1e0-0000-4000-8000-000000000002",
+      "name": "Token confere?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.query['hub.challenge'] }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a1c0f1e0-0000-4000-8000-000000000003",
+      "name": "200 + challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [480, -120]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "forbidden",
+        "options": { "responseCode": 403 }
+      },
+      "id": "a1c0f1e0-0000-4000-8000-000000000004",
+      "name": "403",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [480, 120]
+    }
+  ],
+  "connections": {
+    "Webhook GET /whatsapp": { "main": [[{ "node": "Token confere?", "type": "main", "index": 0 }]] },
+    "Token confere?": {
+      "main": [
+        [{ "node": "200 + challenge", "type": "main", "index": 0 }],
+        [{ "node": "403", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": {
+    "notes": "Variável de ambiente do n8n: WA_VERIFY_TOKEN (o mesmo cadastrado no app da Meta). Mesmo path do workflow 02 (POST)."
+  }
+}

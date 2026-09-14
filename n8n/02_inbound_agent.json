@@ -1,0 +1,504 @@
+{
+  "name": "WA 02 — Inbound com agente",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "name": "Webhook POST /whatsapp",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "whatsapp-inbound"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Achata o payload da Cloud API em itens: mensagens e status.\nconst out = [];\nfor (const entry of ($json.body?.entry ?? [])) {\n  for (const change of (entry.changes ?? [])) {\n    const v = change.value ?? {};\n    const phone_number_id = v.metadata?.phone_number_id;\n    const names = Object.fromEntries((v.contacts ?? []).map(c => [c.wa_id, c.profile?.name]));\n    for (const m of (v.messages ?? [])) {\n      let body = null, media = null;\n      if (m.type === 'text') body = m.text?.body;\n      else if (m.type === 'button') body = m.button?.text;\n      else if (m.type === 'interactive') body = m.interactive?.button_reply?.title ?? m.interactive?.list_reply?.title;\n      else {\n        const part = m[m.type] ?? {};\n        media = { type: m.type, id: part.id, mime_type: part.mime_type, caption: part.caption ?? null, filename: part.filename ?? null };\n        body = part.caption ?? null;\n      }\n      out.push({ json: { kind: 'message', phone_number_id, wa_id: m.from, name: names[m.from] ?? null, wa_message_id: m.id, body, media, ts: Number(m.timestamp) } });\n    }\n    for (const s of (v.statuses ?? [])) {\n      out.push({ json: { kind: 'status', phone_number_id, wa_message_id: s.id, status: s.status, error: s.errors?.[0]?.title ?? null } });\n    }\n  }\n}\nreturn out;"
+      },
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "name": "Extrair itens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "k1",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "status",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "name": "É status de entrega?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update public.messages\n   set status = case $2 when 'sent' then 'sent' when 'delivered' then 'delivered' when 'read' then 'read' when 'failed' then 'failed' else status end,\n       error = coalesce($3, error)\n where wa_message_id = $1\n   and status <> 'read';",
+        "options": {
+          "queryReplacement": "={{ $json.wa_message_id }}, {{ $json.status }}, {{ $json.error }}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "name": "Atualizar status da mensagem",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        720,
+        -160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.ingest_inbound($1, $2, $3, $4, $5, $6::jsonb, to_timestamp($7::bigint)) as r;",
+        "options": {
+          "queryReplacement": "={{ $json.phone_number_id }}, {{ $json.wa_id }}, {{ $json.name }}, {{ $json.wa_message_id }}, {{ $json.body }}, {{ JSON.stringify($json.media) }}, {{ $json.ts }}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "name": "ingest_inbound (linha primeiro)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        720,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "r1",
+              "leftValue": "={{ $json.r.ai_should_reply }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "r2",
+              "leftValue": "={{ $json.r.duplicate }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000006",
+      "name": "ai_should_reply? (trava no banco)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  l.id as lead_id, l.office_id, l.phase, c.id as conversation_id, ct.wa_id, wn.phone_number_id, wn.token_secret_name,\n  to_jsonb(a) as agent,\n  public.conversation_context(c.id, 30) as context,\n  public.lead_dossier(l.id) as dossier\nfrom public.conversations c\njoin public.leads l on l.id = c.lead_id\njoin public.contacts ct on ct.id = c.contact_id\njoin public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id\ncross join lateral public.agent_config(l.office_id, l.phase) a\nwhere c.id = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.r.conversation_id }}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "name": "Agente da fase + contexto + dossiê",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ JSON.stringify($json.context) }}\n\nÚltima mensagem do lead: {{ $('Extrair itens').item.json.body }}",
+        "options": {
+          "systemMessage": "={{ $json.agent.system_prompt }}\n\n## Dossiê do caso (JSON)\n{{ JSON.stringify({ lead: $json.dossier.lead, case_data: $json.dossier.case_data, qualification: $json.dossier.qualification, evidences: $json.dossier.evidences, params: $json.dossier.params }) }}\n\n## Formato de saída (obrigatório)\nResponda SOMENTE com JSON:\n{\"reply\": \"texto para o WhatsApp\", \"advance_to\": null | \"triagem\"|\"qualificacao\"|\"provas\"|\"calculo\"|\"contrato\"|\"briefing\"|\"peca\", \"advance_reason\": string|null, \"intervention\": null | {\"category\": \"duvida_juridica\"|\"fora_de_escopo\"|\"cliente_insatisfeito\"|\"pedido_de_humano\"|\"erro_ia\"|\"outro\", \"reason\": string, \"priority\": 1|2|3}, \"case_data\": null | {campos de public.case_data a atualizar}}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000008",
+      "name": "Agente",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1440,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-5",
+        "options": {
+          "temperature": 0.3,
+          "maxTokensToSample": 1024
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000009",
+      "name": "Modelo (Anthropic)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        360
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza a saída do agente e monta ai_meta (custo derivado, nunca digitado).\nconst ctx = $('Agente da fase + contexto + dossiê').item.json;\nconst raw = $json.output ?? $json.text ?? '';\nlet parsed;\ntry { parsed = JSON.parse(raw.replace(/^```(json)?/,'').replace(/```$/,'').trim()); } catch { parsed = { reply: String(raw) }; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null;\nconst tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: {\n  ...ctx,\n  reply: parsed.reply ?? '',\n  advance_to: parsed.advance_to ?? null,\n  advance_reason: parsed.advance_reason ?? null,\n  intervention: parsed.intervention ?? null,\n  case_data: parsed.case_data ?? null,\n  ai_meta: { agent_role: ctx.agent.role, model: ctx.agent.model, tokens_in, tokens_out, cost_usd }\n}}];"
+      },
+      "id": "b2000000-0000-4000-8000-000000000010",
+      "name": "Interpretar resposta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.apply_agent_effects($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb) as effects;",
+        "options": {
+          "queryReplacement": "={{ $json.lead_id }}, {{ $json.conversation_id }}, {{ $json.agent.role }}, {{ JSON.stringify($json.case_data) }}, {{ $json.advance_to }}, {{ $json.advance_reason }}, {{ JSON.stringify($json.intervention) }}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000011",
+      "name": "Efeitos (dados, fase, fila) — autor IA",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1920,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into public.messages (office_id, conversation_id, direction, sender, body, status, ai_meta)\nvalues ($1, $2, 'out', 'ia', $3, 'pending', $4::jsonb)\nreturning id as message_id;",
+        "options": {
+          "queryReplacement": "={{ $json.office_id }}, {{ $json.conversation_id }}, {{ $json.reply }}, {{ JSON.stringify($json.ai_meta) }}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000012",
+      "name": "Gravar linha em messages (antes do envio)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1920,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select decrypted_secret as token from vault.decrypted_secrets where name = $1;",
+        "options": {
+          "queryReplacement": "={{ $('Interpretar resposta').item.json.token_secret_name }}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000013",
+      "name": "Token do Vault (nunca sai do n8n)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2160,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $('Interpretar resposta').item.json.phone_number_id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $('Interpretar resposta').item.json.wa_id, type: 'text', text: { body: $('Interpretar resposta').item.json.reply } }) }}",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000014",
+      "name": "Graph API: enviar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        100
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update public.messages\n   set status = case when $2 is null then 'failed' else 'sent' end,\n       wa_message_id = $2,\n       error = $3\n where id = $1;",
+        "options": {
+          "queryReplacement": "={{ $('Gravar linha em messages (antes do envio)').item.json.message_id }}, {{ $json.messages?.[0]?.id ?? null }}, {{ $json.error ? JSON.stringify($json.error).slice(0, 500) : null }}"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000015",
+      "name": "Marcar enviada / falha",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2640,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook POST /whatsapp": {
+      "main": [
+        [
+          {
+            "node": "Extrair itens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair itens": {
+      "main": [
+        [
+          {
+            "node": "É status de entrega?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É status de entrega?": {
+      "main": [
+        [
+          {
+            "node": "Atualizar status da mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ingest_inbound (linha primeiro)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ingest_inbound (linha primeiro)": {
+      "main": [
+        [
+          {
+            "node": "ai_should_reply? (trava no banco)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai_should_reply? (trava no banco)": {
+      "main": [
+        [
+          {
+            "node": "Agente da fase + contexto + dossiê",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Agente da fase + contexto + dossiê": {
+      "main": [
+        [
+          {
+            "node": "Agente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modelo (Anthropic)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agente",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente": {
+      "main": [
+        [
+          {
+            "node": "Interpretar resposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar resposta": {
+      "main": [
+        [
+          {
+            "node": "Gravar linha em messages (antes do envio)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Efeitos (dados, fase, fila) — autor IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar linha em messages (antes do envio)": {
+      "main": [
+        [
+          {
+            "node": "Token do Vault (nunca sai do n8n)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token do Vault (nunca sai do n8n)": {
+      "main": [
+        [
+          {
+            "node": "Graph API: enviar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Graph API: enviar": {
+      "main": [
+        [
+          {
+            "node": "Marcar enviada / falha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "notes": "Credencial Postgres = connection string do Supabase com service_role (bypassa RLS; só o n8n usa). Env: LLM_PRICE_IN_PER_MTOK, LLM_PRICE_OUT_PER_MTOK para o custo em ai_meta. O prompt de cada agente vem de public.agents.system_prompt (pendência: conteúdo). Mídia recebida: baixar via /{media_id} e subir no bucket 'provas' fica para o Sprint 3."
+  }
+}
