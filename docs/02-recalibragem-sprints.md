@@ -7,23 +7,43 @@ prende o escritório não é a inbox: é o **caso como objeto**. A conversa é s
 ele. Isso muda a ordem do backlog: o domínio jurídico entra antes de qualquer tela bonita, e a UI
 do caso vem antes de contrato, peça e dashboard.
 
-## O concorrente, por função (não por tela)
+## O concorrente, por dentro
 
-Descrito por estrutura, sem nome, logotipo, identidade ou texto copiados. Só o que o produto faz.
+Observado no produto em uso (setembro/2026). Descrito por estrutura, sem nome, logotipo,
+identidade ou texto copiados.
 
-| Função | O que entrega | O que fazemos igual | O que fazemos diferente |
-|---|---|---|---|
-| Atendimento por IA no WhatsApp | Agente responde 24h, coleta dados, agenda | Sim, com um agente por fase | Agente muda com a fase; o prompt de cada um é versionado em `agents` |
-| Monitor em tempo real | Equipe vê todas as conversas e assume | Sim | Trava no banco, não na UI; enviar manual já assume |
-| Funil / kanban | Lead anda por etapas | Sim | Etapas são um enum tipado; IA não retrocede; todo movimento tem autor |
-| Qualificação | Filtra lead sem caso | Sim | Portão explícito e parametrizável por escritório (ticket, vínculo, prescrição) |
-| Cálculo | Estimativa de verbas na triagem | Sim | Função no banco, auditável, com aviso de que não é perícia |
-| Prescrição | Alerta | Sim | Coluna indexada, alerta no card antes de perguntar |
-| Provas | Coleta de documentos | Sim | Checklist por tese; bucket privado por escritório |
-| Contrato | Envio e assinatura | Sprint 3 | Provedor de assinatura plugável (`signature_provider`) |
-| Peça | Minuta a partir do caso | Sprint 4 | Modelo por tese com placeholders; revisão humana obrigatória |
-| Fila de humano | Escalação | Sim | Fila com prioridade; IA cala enquanto há item aberto |
-| Custo | Relatório | Sprint 5 | Custo por lead derivado de `ai_meta`, nunca digitado |
+**Navegação (barra lateral).** Bloco "Empresa" com o nome do escritório; nove itens: Dashboard,
+Fluxo de Trabalho, Intervenção humana, Jurídico, Agendamentos, Clientes, Finalizados, Histórico,
+Marketing. Rodapé com usuário, papel e ações: notificações, tema escuro, configurações, sair,
+recolher.
+
+**Dashboard.** Filtro por mês e por agente. Cinco abas: Geral, Funil de Venda, Jornada do Cliente,
+Produtividade Humana, Investimento Financeiro. Na aba Geral: contratos fechados (hoje, semana,
+mês, em anéis), contratos fechados por dia (barras), regiões que mais fecham por UF (barras
+horizontais), contratos por tipo de ticket (HT/MT/LT com quantidade e valor, total), valor de
+causa gerado por dia (área).
+
+**Mapa para o nosso schema.**
+
+| Item do concorrente | Nosso | Estado |
+|---|---|---|
+| Dashboard (5 abas) | `dashboard_geral/funil/jornada/produtividade/investimento` (004) | RPCs prontas; UI em `PROMPT-v3` |
+| Fluxo de Trabalho | `/casos` (kanban + lista sobre `v_case_cards`) | `PROMPT-v2` |
+| Intervenção humana | `/fila` sobre `human_interventions` | `PROMPT-v1` |
+| Jurídico | `/juridico`: `contracts` + `pieces` + `piece_templates` | `PROMPT-v3` |
+| Agendamentos | `/agendamentos` sobre `tasks.due_at` | `PROMPT-v3` |
+| Clientes | `/clientes`: contatos com contrato assinado (`contacts.uf`) | `PROMPT-v3` |
+| Finalizados | `/finalizados`: `leads.phase='encerrado'` + `closed_by` | `PROMPT-v3` |
+| Histórico | `/historico`: feed de `case_events` | `PROMPT-v3` |
+| Marketing | sem schema ainda | placeholder |
+| Contratos por ticket (HT/MT/LT) | `contracts.faixa` (alto/medio/baixo) via `faixa_ticket()` | 004 |
+| Regiões por UF | `contacts.uf` | 004 |
+| Valor de causa | `contracts.valor_causa` (default: `lead_qualification.verbas_total`) | 004 |
+| Filtro "agentes" do dashboard | `leads.assigned_to` (membro humano) | 004 |
+
+O que fazemos diferente, de propósito: trava do takeover no banco; fase como enum com autor em todo
+movimento; portão de qualificação parametrizável; custo de IA derivado de `ai_meta`, nunca digitado;
+IA cala enquanto há intervenção aberta.
 
 ## Backlog por sprint
 
@@ -45,11 +65,16 @@ Conversa, Dados, Qualificação, Provas. Prescrição no card com alerta pela ja
 Aceite: mover a fase no kanban grava evento com autor e a linha do tempo reflete em outra aba sem
 refresh.
 
-### Sprint 3 — Contrato e assinatura
-Geração do contrato de honorários a partir de `office_params.honorarios_percent` e do dossiê;
-integração com um provedor de assinatura (webhook de assinado → `contracts.signed_at` →
-`advance_phase('briefing','sistema')`). Mídia recebida no WhatsApp baixada para o bucket `provas`
-e ligada a `evidences.message_id`.
+### Sprint 3 — Paridade com o concorrente (antecipado: `004_dashboard.sql` + `lovable/PROMPT-v3.md`)
+Navegação igual (dez itens: os nove do concorrente mais Conversas), identidade própria, dashboard
+com as cinco abas sobre RPCs de agregação, páginas Clientes, Finalizados, Histórico, Jurídico
+(contratos e peças), Agendamentos (tarefas), notificações. `seed_demo.sql` para ver tudo cheio.
+Trigger de contrato: assinar preenche valor/faixa, grava evento e avança para briefing.
+
+### Sprint 3b — Assinatura eletrônica e mídia
+Integração com um provedor de assinatura (webhook de assinado → `contracts.status='assinado'`, que
+já dispara o resto). Mídia recebida no WhatsApp baixada para o bucket `provas` e ligada a
+`evidences.message_id`.
 
 ### Sprint 4 — Briefing e peça
 Agente de briefing conduz a entrevista e preenche `briefings.answers`; agente de redação monta

@@ -17,11 +17,14 @@ Vault) + n8n + WhatsApp Cloud API.
 | Sprint 1 — domínio jurídico (fases, agentes, portão, verbas, prescrição, provas, contrato, briefing, peça, fila, custo, dossiê) | `supabase/002_dominio_juridico.sql` | Aplicada e testada |
 | Sprint 2 — caso único (profiles, cards, `ui_advance_phase`, eventos automáticos, Realtime, dossiê v2, bucket) | `supabase/003_caso_unico.sql` | Aplicada e testada |
 | Sprint 2 — prompts de build do modal de caso, kanban, lista, abas | `lovable/PROMPT-v2.md` | 8 prompts |
+| Sprint 3 — dashboard (5 abas), UF, valor de causa, trigger de contrato | `supabase/004_dashboard.sql` | Aplicada e testada |
+| Sprint 3 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos | `lovable/PROMPT-v3.md` | 6 prompts |
+| Dados de demonstração (60 leads no mês, contratos, custos) | `supabase/seed_demo.sql` | Testado; reversível |
 
-"Aplicada e testada" = `supabase/tests/run.sh` roda 001→003 duas vezes num PostgreSQL 16 limpo
-(idempotência) e passa o smoke test: ingestão idempotente, isolamento entre escritórios para leads,
-mensagens, tarefas, eventos e `lead_dossier`, trava do takeover, fase com autor, portão, prescrição,
-fila e efeitos do agente.
+"Aplicada e testada" = `supabase/tests/run.sh` roda 001→004 duas vezes num PostgreSQL 16 limpo
+(idempotência) e passa dois testes: o smoke (ingestão idempotente, isolamento entre escritórios para
+leads, mensagens, tarefas, eventos e `lead_dossier`, trava do takeover, fase com autor, portão,
+prescrição, fila, efeitos do agente) e o de dashboard (seed de 60 leads e as cinco RPCs como membro).
 
 ## Decisões que não podem ser violadas
 
@@ -35,10 +38,11 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
 
 ## Como aplicar no Supabase
 
-1. SQL Editor: colar `supabase/apply_all.sql` (as três migrations juntas) e executar. Ou rodar
-   `001_schema.sql`, `002_dominio_juridico.sql` e `003_caso_unico.sql` nessa ordem. Todas são
-   idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir das três
-   (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
+1. SQL Editor: colar `supabase/apply_all.sql` (001..004 juntas) e executar. Ou rodar
+   `001_schema.sql`, `002_dominio_juridico.sql`, `003_caso_unico.sql` e `004_dashboard.sql` nessa
+   ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
+   das individuais (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
+   Opcional: `seed_demo.sql` cria 60 leads de demonstração (reversível pelo bloco LIMPEZA).
 2. Vault: criar o segredo com o token permanente da Meta (ex.: nome `wa_token_<escritorio>`).
 3. Cadastrar escritório, membro e número:
    ```sql
@@ -53,7 +57,8 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
    Anthropic, definir `WA_VERIFY_TOKEN`, `SUPABASE_WEBHOOK_SECRET`, `LLM_PRICE_IN_PER_MTOK`,
    `LLM_PRICE_OUT_PER_MTOK`. Ativar os três.
 6. Meta: webhook `<n8n>/webhook/whatsapp` com o `WA_VERIFY_TOKEN`; assinar `messages`.
-7. Lovable: conectar o Supabase e seguir `lovable/PROMPT-v1.md`, depois `PROMPT-v2.md`.
+7. Lovable: conectar o Supabase e seguir `lovable/PROMPT-v1.md` (prompts 1 e 2), depois
+   `PROMPT-v3.md` (casca e dashboard), depois o restante do v1 e o `PROMPT-v2.md`.
 
 ## Como testar localmente
 
@@ -69,9 +74,9 @@ Saída esperada termina em `SMOKE OK`.
 
 ```
 docs/       blueprint e recalibragem do backlog
-supabase/   migrations 001..003 e tests/ (shim + smoke)
+supabase/   migrations 001..004, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard)
 n8n/        três workflows exportados
-lovable/    prompts de build v1 (monitor) e v2 (caso único)
+lovable/    prompts de build v1 (monitor), v2 (caso único) e v3 (paridade e dashboard)
 ```
 
 ## Pendências de produto
