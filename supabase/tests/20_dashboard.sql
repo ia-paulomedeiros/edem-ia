@@ -34,6 +34,15 @@ begin
 
   f := public.dashboard_funil('cccccccc-cccc-cccc-cccc-cccccccccccc');
   assert (f->>'leads')::int = 60, 'funil: 60 leads na coorte';
+  assert jsonb_array_length(f->'macro') = 4, 'funil: 4 macro-etapas';
+  assert (f->'macro'->0->>'n')::int = 60 and (f->'macro'->0->>'pct_topo')::int = 100, 'funil: topo = 60, 100%';
+  assert (f->'macro'->1->>'n')::int between 20 and 59, 'funil: abertura (2+ msgs) entre 20 e 59, veio ' || (f->'macro'->1->>'n');
+  assert (f->'macro'->1->>'conv_etapa')::int between 30 and 99, 'funil: conversão da abertura';
+  assert (f->'macro'->3->>'n')::int = (f->>'contratos')::int, 'funil: contratos = assinados';
+  assert (f->'macro'->2->>'n')::int >= (f->'macro'->3->>'n')::int, 'funil: links >= contratos';
+  assert (f->'macro'->3->>'conv_etapa') is not null, 'funil: conversão da etapa';
+  assert (select count(*) from public.dashboard_funil_leads('cccccccc-cccc-cccc-cccc-cccccccccccc', 'contratos')) = (f->>'contratos')::int, 'funil_leads: lista os assinados';
+  assert (select count(*) from public.dashboard_funil_leads('cccccccc-cccc-cccc-cccc-cccccccccccc', 'novos_leads')) = 60, 'funil_leads: lista todos';
   assert jsonb_array_length(f->'etapas') = 8, 'funil: 8 etapas (sem encerrado)';
   assert (f->'etapas'->0->>'taxa')::numeric = 100, 'funil: 100% alcançam novo';
 

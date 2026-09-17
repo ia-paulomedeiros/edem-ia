@@ -68,6 +68,11 @@ begin
     values (v_office, v_conv, 'out', 'ia', 'Certo. Qual era o seu salário e você tinha carteira assinada?', 'read',
             jsonb_build_object('agent_role', 'qualificacao', 'model', 'claude-sonnet-5', 'tokens_in', 1200 + (random()*400)::int, 'tokens_out', 90 + (random()*60)::int, 'cost_usd', round((0.005 + random() * 0.006)::numeric, 5)),
             v_dia + time '09:40');
+    -- ~78% respondem de novo (entram na "taxa de abertura": régua de 2+ mensagens)
+    if random() < 0.78 then
+      insert into public.messages (office_id, conversation_id, direction, sender, body, status, created_at)
+      values (v_office, v_conv, 'in', 'contact', 'Trabalhei na Empresa uns 3 anos, salário de ' || v_salario::int || ', com carteira', 'received', v_dia + time '09:45');
+    end if;
     if v_member is not null and random() < 0.3 then
       insert into public.messages (office_id, conversation_id, direction, sender, body, status, sent_by, created_at)
       values (v_office, v_conv, 'out', 'humano', 'Oi, aqui é do escritório. Vou continuar seu atendimento.', 'read', v_member, v_dia + time '11:00');

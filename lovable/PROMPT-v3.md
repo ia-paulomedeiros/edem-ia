@@ -9,8 +9,9 @@ logotipo, paleta e textos não.
 
 - v1 concluído até o Prompt 2 (login, escritório ativo, inbox). Os demais prompts do v1 e todo o v2
   continuam válidos e entram depois; este v3 só reorganiza a casca e adiciona o dashboard.
-- `supabase/004_dashboard.sql` aplicado. Ela cria `contacts.uf`, `contracts.valor_causa/faixa`,
-  o trigger de contrato e as RPCs `dashboard_geral`, `dashboard_funil`, `dashboard_jornada`,
+- `supabase/004_dashboard.sql` e `005_funil.sql` aplicadas. Elas criam `contacts.uf`,
+  `contracts.valor_causa/faixa`, o trigger de contrato e as RPCs `dashboard_geral`, `dashboard_funil`
+  (com as quatro macro-etapas), `dashboard_funil_leads`, `dashboard_jornada`,
   `dashboard_produtividade`, `dashboard_investimento`.
 - `supabase/seed_demo.sql` rodado uma vez, para o dashboard não nascer vazio.
 - Tipos do Supabase regenerados.
@@ -133,10 +134,15 @@ preenchidos. Mudar o mês para o anterior zera tudo (sem erro). Escolher um agen
 
 `dashboard_funil` →
 ```
-{ leads, etapas: [ { fase, alcancaram, taxa } ... 8 fases sem 'encerrado' ],
+{ leads,
+  macro: [ { ordem: 1..4, etapa: 'novos_leads'|'abertura'|'links_enviados'|'contratos',
+             titulo, regua: null|'2+ msgs', n, pct_topo, conv_etapa: null|número, interv_humana } ],
+  etapas: [ { fase, alcancaram, taxa } ... 8 fases sem 'encerrado' ],
   atual: [ { fase, leads } ], encerrados: { ia, equipe },
   qualificacao: { aprovados, reprovados }, contratos }
 ```
+`dashboard_funil_leads(p_office, p_etapa, p_month, p_member)` → linhas de `v_case_cards` dos leads
+daquela macro-etapa (para o clique no card).
 `dashboard_jornada` →
 ```
 { horas_por_fase: [ { fase, media_horas, n } ], primeira_resposta_min, dias_ate_contrato, mensagens_por_lead }
@@ -159,9 +165,18 @@ provas → Provas, calculo → Cálculo, contrato → Contrato, briefing → Bri
 encerrado → Encerrado. Centralize num `PHASE_LABELS`.
 
 **Faça.**
-1. **Funil de Venda**: funil horizontal em degraus (barras decrescentes com a taxa %), cards
-   "Leads no mês", "Aprovados no portão", "Reprovados", "Contratos", e um donut "Encerrados por"
-   (IA vs Equipe). Abaixo, "Onde estão agora": barras por fase atual.
+1. **Funil de Venda** (layout do concorrente): à esquerda um card com o funil em trapézio (SVG,
+   quatro degraus com `n` e `pct_topo`) e a legenda das quatro etapas de `macro`; à direita quatro
+   cards numerados 01..04 (título, número grande, `pct_topo`, barra de progresso, e duas linhas de
+   rodapé: "TOPO DO FUNIL 100%" no primeiro, "RÉGUA 2+ msgs" no segundo, "CONV. DA ETAPA x%" nos
+   demais; em todos "INTERV. HUMANA n"). O card clicado fica destacado com fundo primária e texto
+   branco. Abaixo à esquerda, o widget "Contratos por tipo (ticket)" reaproveitado da aba Geral
+   (mesmo componente, dados de `dashboard_geral.por_faixa`). Abaixo à direita, painel "Clique em
+   uma etapa acima para ver os leads": ao clicar, chama `dashboard_funil_leads` e lista os leads em
+   tabela (nome, telefone, fase, última mensagem, UF, selo IA/Equipe); clique na linha abre
+   `?caso=<lead_id>` (ou `/casos?caso=` enquanto o modal do v2 não existir). Etapa escolhida em
+   `?etapa=`. Mantenha, num acordeão recolhido "Detalhe por fase", os dados de `etapas`, `atual`,
+   `encerrados` e `qualificacao` como barras simples.
 2. **Jornada do Cliente**: quatro cards de KPI (primeira resposta em minutos, dias até contrato,
    mensagens por lead, fases com dado) e um gráfico de barras "Horas médias por fase" na ordem
    das fases.
