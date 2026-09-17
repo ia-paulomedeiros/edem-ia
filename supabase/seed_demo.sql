@@ -6,7 +6,7 @@
 -- assinados espalhados pelos dias, UFs variadas e alguns encerrados.
 -- Tudo marcado com wa_id começando em '5500' para poder apagar depois.
 --
--- Rodar no SQL Editor depois de 001..007. Pode rodar mais de uma vez (apaga
+-- Rodar no SQL Editor depois de 001..008. Pode rodar mais de uma vez (apaga
 -- e recria o demo). Para remover: rode só o bloco "LIMPEZA".
 -- =============================================================================
 
@@ -14,6 +14,8 @@
 delete from public.leads where contact_id in (select id from public.contacts where wa_id like '5500%');
 delete from public.contacts where wa_id like '5500%';
 delete from public.ad_spend where canal = 'meta_ads' and nota is null and office_id = (select id from public.offices order by created_at limit 1);
+delete from public.piece_models where file_path like '%/demo/%';
+delete from public.integrations where config->>'demo' = 'true';
 
 -- ---------- GERAÇÃO
 do $$
@@ -139,6 +141,53 @@ begin
   select v_office, d::date, 'meta_ads', (80 + random() * 220)::int
   from generate_series(v_inicio, v_fim, interval '1 day') d
   on conflict (office_id, dia, canal) do update set valor = excluded.valor;
+end $$;
+
+-- ---------- CONFIGURAÇÕES (empresa, integrações sem segredo, 47 modelos de petição)
+do $$
+declare
+  v_office uuid; v_member uuid; t text; b text; i int := 0;
+  v_blocos text[] := array['Cabeçalho','Síntese do contrato','Abertura dos pedidos','Liquidação dos pedidos','Conciliação','Juízo 100% digital','Justiça gratuita','Fechamento dos pedidos'];
+  v_teses text[] := array['verbas_rescisorias','horas_extras','rescisao_indireta','vinculo_empregaticio','adicional_insalubridade','adicional_periculosidade','dano_moral','equiparacao_salarial','acumulo_de_funcao','estabilidade_gestante','acidente_de_trabalho','intervalo_intrajornada','fgts_nao_depositado'];
+  v_partes text[] := array['Pedido','Fundamentação','Provas e jurisprudência'];
+begin
+  select id into v_office from public.offices order by created_at limit 1;
+  select user_id into v_member from public.office_members where office_id = v_office limit 1;
+
+  update public.offices set
+    tipo = 'escritorio', cnpj = coalesce(cnpj, '12.345.678/0001-90'), oab_responsavel = coalesce(oab_responsavel, 'OAB/SP 123.456'),
+    fundador = coalesce(fundador, 'Dra. Bruna Medeiros'), fundacao = coalesce(fundacao, date '2018-03-01'),
+    endereco = coalesce(endereco, 'Av. Paulista, 1000, cj. 101'), cidade = coalesce(cidade, 'São Paulo'), uf = coalesce(uf, 'SP'),
+    email = coalesce(email, 'contato@escritorio.adv.br'), telefone = coalesce(telefone, '(11) 3000-0000'),
+    whatsapp_comercial = coalesce(whatsapp_comercial, '5511999999999'), telefone_suporte = coalesce(telefone_suporte, '(11) 90000-0000')
+  where id = v_office;
+
+  -- integrações de demonstração: só a linha, sem segredo (status "não testado"); o real entra por set_integration()
+  insert into public.integrations (office_id, provider, kind, active, config, status)
+  select v_office, c.provider, c.kind, c.provider in ('meta_whatsapp','autentique','anthropic','openai_whisper'),
+         jsonb_build_object('demo', 'true'), 'nao_testado'
+  from public.integration_catalog c
+  on conflict (office_id, provider) do nothing;
+
+  -- 8 blocos obrigatórios (geral) + 13 teses × 3 partes = 47 modelos
+  foreach b in array v_blocos loop
+    i := i + 1;
+    insert into public.piece_models (office_id, name, category, description, file_path, mime_type, size_bytes, required, uploaded_by, updated_at)
+    values (v_office, b, 'geral', 'Bloco obrigatório de toda peça (demo, sem arquivo no bucket)',
+            v_office::text || '/demo/' || lpad(i::text, 2, '0') || '-' || lower(regexp_replace(b, '[^a-zA-Z0-9]+', '-', 'g')) || '.docx',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 12000 + (random()*40000)::int, true, v_member,
+            now() - (random() * interval '120 days'));
+  end loop;
+  foreach t in array v_teses loop
+    foreach b in array v_partes loop
+      i := i + 1;
+      insert into public.piece_models (office_id, name, category, description, file_path, mime_type, size_bytes, required, active, uploaded_by, updated_at)
+      values (v_office, initcap(replace(t, '_', ' ')) || ' — ' || b, t, 'Modelo da tese (demo, sem arquivo no bucket)',
+              v_office::text || '/demo/' || lpad(i::text, 2, '0') || '-' || t || '-' || lower(regexp_replace(b, '[^a-zA-Z0-9]+', '-', 'g')) || '.docx',
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 20000 + (random()*80000)::int, false, random() < 0.9, v_member,
+              now() - (random() * interval '300 days'));
+    end loop;
+  end loop;
 end $$;
 
 select 'demo criado' as status, count(*) as leads from public.leads l join public.contacts c on c.id = l.contact_id where c.wa_id like '5500%';

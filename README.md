@@ -21,13 +21,14 @@ Vault) + n8n + WhatsApp Cloud API.
 | Sprint 3 — funil de venda em quatro macro-etapas com lista de leads por etapa | `supabase/005_funil.sql` | Aplicada e testada |
 | Sprint 3 — período livre, jornada por agente, produtividade da fila (desfecho), investimento Ads + tokens em BRL, protocolos | `supabase/006_dashboard_periodo.sql` | Aplicada e testada |
 | Sprint 3 — fila como esteira: grupos por tipo, P1..P4, observação, marcadores, ligações, atribuição, `v_intervention_cards` | `supabase/007_fila.sql` | Aplicada e testada |
-| Sprint 3 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos | `lovable/PROMPT-v3.md` | 6 prompts |
-| Dados de demonstração (60 leads no mês, contratos, custos) | `supabase/seed_demo.sql` | Testado; reversível |
+| Sprint 3 — configurações no layout do concorrente: dados da empresa, integrações com segredo no Vault, modelos de petição como biblioteca de arquivos, prompts dos agentes ocultos | `supabase/008_configuracoes.sql` | Aplicada e testada |
+| Sprint 3 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos, Configurações | `lovable/PROMPT-v3.md` | 7 prompts |
+| Dados de demonstração (60 leads no mês, contratos, custos, empresa, integrações, 47 modelos) | `supabase/seed_demo.sql` | Testado; reversível |
 
-"Aplicada e testada" = `supabase/tests/run.sh` roda 001→007 duas vezes num PostgreSQL 16 limpo
+"Aplicada e testada" = `supabase/tests/run.sh` roda 001→008 duas vezes num PostgreSQL 16 limpo
 (idempotência) e passa dois testes: o smoke (ingestão idempotente, isolamento entre escritórios para
 leads, mensagens, tarefas, eventos e `lead_dossier`, trava do takeover, fase com autor, portão,
-prescrição, fila, efeitos do agente) e o de dashboard (seed de 60 leads e as cinco RPCs como membro).
+prescrição, fila, efeitos do agente, integrações com Vault, modelos, prompts invisíveis) e o de dashboard (seed de 60 leads e as cinco RPCs como membro).
 
 ## Decisões que não podem ser violadas
 
@@ -35,18 +36,23 @@ prescrição, fila, efeitos do agente) e o de dashboard (seed de 60 leads e as c
 - Nenhuma mensagem vai para o WhatsApp sem virar linha em `messages` primeiro.
 - A fase é uma coluna só (`leads.phase`). Kanban, lista, funil e dashboard são projeções.
 - Todo evento nomeia o autor (`case_events.actor`; `leads.closed_by`).
-- Segredo não vai para tabela: token no Vault, no schema só o nome da referência.
+- Segredo não vai para tabela: token no Vault, no schema só o nome da referência. O cliente grava
+  por `set_integration()` e nunca lê de volta; só o n8n (service_role) resolve o valor.
+- Prompts dos agentes (`agent_prompts`) e esqueletos internos (`piece_templates`) não têm policy:
+  invisíveis para qualquer usuário do produto.
 
 Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`.
 
 ## Como aplicar no Supabase
 
-1. SQL Editor: colar `supabase/apply_all.sql` (001..007 juntas) e executar. Ou rodar
+1. SQL Editor: colar `supabase/apply_all.sql` (001..008 juntas) e executar. Ou rodar
    `001_schema.sql`, `002_dominio_juridico.sql`, `003_caso_unico.sql`, `004_dashboard.sql`,
-   `005_funil.sql`, `006_dashboard_periodo.sql` e `007_fila.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
+   `005_funil.sql`, `006_dashboard_periodo.sql`, `007_fila.sql` e `008_configuracoes.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
    das individuais (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
    Opcional: `seed_demo.sql` cria 60 leads de demonstração (reversível pelo bloco LIMPEZA).
-2. Vault: criar o segredo com o token permanente da Meta (ex.: nome `wa_token_<escritorio>`).
+2. Token da Meta: pelo painel, Configurações → Integrações → WhatsApp Cloud API (Meta), que chama
+   `set_integration()` e cria o segredo no Vault e o número em `whatsapp_numbers`. Alternativa manual:
+   criar o segredo no Vault e cadastrar o número como abaixo.
 3. Cadastrar escritório, membro e número:
    ```sql
    insert into public.offices (id, name, slug) values (gen_random_uuid(), 'Meu Escritório', 'meu') returning id;
@@ -77,7 +83,7 @@ Saída esperada termina em `SMOKE OK`.
 
 ```
 docs/       blueprint e recalibragem do backlog
-supabase/   migrations 001..007, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard)
+supabase/   migrations 001..008, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard)
 n8n/        três workflows exportados
 lovable/    prompts de build v1 (monitor), v2 (caso único) e v3 (paridade e dashboard)
 ```
@@ -86,4 +92,4 @@ lovable/    prompts de build v1 (monitor), v2 (caso único) e v3 (paridade e das
 
 - Nome e domínio do produto.
 - Modelo de cobrança (escritório, usuário ou volume).
-- Conteúdo de `agents.system_prompt` dos sete agentes.
+- Conteúdo de `agent_prompts.system_prompt` dos sete agentes (por SQL, com service_role; não há tela).

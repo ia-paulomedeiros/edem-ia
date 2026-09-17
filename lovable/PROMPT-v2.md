@@ -245,8 +245,10 @@ geram eventos por trigger. `evidences` está no Realtime.
    `update evidences set storage_path, status='recebida'`. Barra de progresso. Limite 25 MB.
 4. Ações **Validar** / **Rejeitar** (mudam `status` e `validated_by=auth.uid()`). Preview: para
    imagem e PDF, `createSignedUrl` de 5 minutos e abrir em diálogo; para áudio, `<audio>`.
-5. Checklist da tese: se `lead.tese` bater com um `piece_templates.tese`, mostrar
-   `required_evidence` como itens pendentes com botão de solicitar cada um.
+5. Checklist da tese: lista fixa no front por tese (`verbas_rescisorias`: documento, print;
+   `horas_extras`: documento, print, testemunha; `rescisao_indireta`: documento, print, áudio,
+   testemunha; `vinculo_empregaticio`: print, foto, testemunha) mostrada como itens pendentes com
+   botão de solicitar cada um. Não leia `piece_templates`: é interno e o cliente não enxerga.
 
 **Não faça.** Não torne o bucket público. Não salve URL assinada no banco.
 

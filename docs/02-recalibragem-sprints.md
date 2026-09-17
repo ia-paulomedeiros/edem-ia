@@ -42,7 +42,8 @@ Personalizado) e por agente/usuário; "Limpar tudo". Cinco abas:
 | Protocolos | `pieces.protocolado_em` (006) | 006 |
 | Fluxo de Trabalho | `/casos` (kanban + lista sobre `v_case_cards`) | `PROMPT-v2` |
 | Intervenção humana | `/fila` sobre `human_interventions` | `PROMPT-v1` |
-| Jurídico | `/juridico`: `contracts` + `pieces` + `piece_templates` | `PROMPT-v3` |
+| Jurídico | `/juridico`: `contracts` + `pieces` | `PROMPT-v3` |
+| Configurações (Meu perfil, Empresa, Integrações, Modelos de petição) | `offices` cadastral, `integrations` + Vault, `piece_models` + bucket `modelos` (008) | 008; UI em `PROMPT-v3` Prompt 7 |
 | Agendamentos | `/agendamentos` sobre `tasks.due_at` | `PROMPT-v3` |
 | Clientes | `/clientes`: contatos com contrato assinado (`contacts.uf`) | `PROMPT-v3` |
 | Finalizados | `/finalizados`: `leads.phase='encerrado'` + `closed_by` | `PROMPT-v3` |
@@ -82,6 +83,11 @@ Navegação igual (dez itens: os nove do concorrente mais Conversas), identidade
 com as cinco abas sobre RPCs de agregação, páginas Clientes, Finalizados, Histórico, Jurídico
 (contratos e peças), Agendamentos (tarefas), notificações. `seed_demo.sql` para ver tudo cheio.
 Trigger de contrato: assinar preenche valor/faixa, grava evento e avança para briefing.
+Configurações no layout do concorrente (`008_configuracoes.sql`): dados cadastrais da empresa,
+integrações por provedor com segredo no Vault (só RPC escreve; n8n resolve com service_role e
+registra o teste), modelos de petição como biblioteca de arquivos sem limite (bucket `modelos`),
+e prompts dos agentes fora do alcance do cliente (`agent_prompts` sem policy; `piece_templates`
+idem). Ninguém que usa o produto vê como os agentes são montados.
 
 ### Sprint 3b — Assinatura eletrônica e mídia
 Integração com um provedor de assinatura (webhook de assinado → `contracts.status='assinado'`, que
@@ -90,7 +96,8 @@ já dispara o resto). Mídia recebida no WhatsApp baixada para o bucket `provas`
 
 ### Sprint 4 — Briefing e peça
 Agente de briefing conduz a entrevista e preenche `briefings.answers`; agente de redação monta
-`pieces.content` a partir de `piece_templates` da tese; tela de revisão com diff e aprovação por
+`pieces.content` a partir de `piece_templates` da tese (interno) e dos arquivos de `piece_models`
+(obrigatórios + tese, via `piece_models_for()`); tela de revisão com diff e aprovação por
 advogado (`reviewed_by`), status `protocolada` com número de protocolo.
 
 ### Sprint 5 — Dashboard, custo e cobrança
@@ -99,11 +106,11 @@ por contrato assinado (`lead_acquisition_cost`), taxa do portão. Modelo de cobr
 produto) e medição do que for escolhido (escritório, usuário ou volume).
 
 ### Sprint 6 — Onboarding e identidade
-Nome e domínio (pendência), e-mail transacional, convite de membros, cadastro guiado do número da
-Meta, criação do segredo no Vault pelo painel.
+Nome e domínio (pendência), e-mail transacional, convite de membros. (Cadastro do número da Meta e
+segredo no Vault pelo painel: feito na 008.)
 
 ## Pendências de produto (não de código)
 
 - Nome e domínio. Trava identidade visual, e-mail transacional e onboarding.
 - Modelo de cobrança: por escritório, por usuário ou por volume de conversa.
-- Prompt de cada um dos sete agentes.
+- Prompt de cada um dos sete agentes (entra em `agent_prompts` por SQL/service_role; não há tela).

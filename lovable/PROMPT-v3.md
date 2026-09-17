@@ -287,8 +287,8 @@ lista os encerrados pela IA com motivo, e o Histórico cresce ao vivo quando um 
 **Contexto.** `contracts` (`status: rascunho|enviado|assinado|recusado|cancelado`,
 `honorarios_percent, document_path, signature_provider, signature_ref, sent_at, signed_at,
 valor_causa, faixa`), `pieces` (`tese, status: rascunho|revisao|aprovada|protocolada, content,
-generated_by_actor, reviewed_by, protocolo`), `piece_templates` (`tese, name, body,
-required_evidence`, globais quando `office_id` nulo), `tasks` (`title, description, due_at,
+generated_by_actor, reviewed_by, protocolo`), `piece_models` (biblioteca de arquivos do
+escritório; ver Prompt 7), `tasks` (`title, description, due_at,
 done_at, assigned_to, lead_id, created_by_actor`). Mudar `contracts.status` dispara efeitos no
 banco (evento com autor; assinar avança a fase). Só `admin` e `advogado` escrevem em `contracts`
 e `pieces`.
@@ -302,8 +302,8 @@ e `pieces`.
      `provas` em `<office_id>/<lead_id>/contrato-<uuid>.pdf` e grava `document_path`.
    - **Peças**: lista por status com tese, lead, gerada por (IA/humano), revisor. Abrir mostra
      `content` num editor de texto simples com botões Enviar para revisão / Aprovar / Marcar
-     protocolada (pede o número). Aba secundária "Modelos" lista `piece_templates` (globais em
-     leitura; do escritório editáveis por admin/advogado).
+     protocolada (pede o número). Link "Modelos de petição" leva a `/config/modelos` (Prompt 7).
+     Não leia `piece_templates` nem `agent_prompts`: são internos e o cliente não enxerga.
 2. `/agendamentos`: visão semanal (7 colunas) e lista das `tasks` com `due_at`, do escritório.
    Criar tarefa (título, descrição, data/hora, responsável entre os membros, lead opcional via
    busca `search_cases`). Concluir marca `done_at`. Atrasadas em vermelho. Realtime em `tasks`.
@@ -326,13 +326,97 @@ aparece na semana e no contador.
    certa. Contagem atualizada por Realtime nas três tabelas.
 2. `/marketing`: página "Em breve" com uma descrição honesta do que virá (origem dos leads e
    campanhas). Não há dado no banco para isso ainda; não invente.
-3. **Página `/config`** reorganizada em abas: Escritório (nome; admin), Equipe (membros e papéis;
-   admin), WhatsApp (v1 Prompt 5), Parâmetros (v1 Prompt 5), Agentes (lista de `agents` globais com
-   nome, papel e descrição; override do escritório editável por admin: `system_prompt`, `model`,
-   `temperature`, `enabled`).
+3. **Página `/config`**: substituída pelo Prompt 7 (layout do concorrente). Se este prompt rodar
+   antes do 7, deixe `/config` como está.
 4. **Polimento**: estados vazios com ilustração leve e chamada para ação; esqueletos em toda
    carga; toasts de erro com a mensagem do Supabase; foco visível em tudo; título da aba do
    navegador por página.
 
 **Critério de aceite.** Um `request_intervention` no SQL Editor faz o badge do sino subir sem
-refresh. Um admin edita o prompt do agente de Recepção do seu escritório e um atendente só lê.
+refresh.
+
+---
+
+## Prompt 7 — Configurações no layout do concorrente (Meu perfil, Empresa, Integrações, Modelos)
+
+**Pré-requisito.** `supabase/008_configuracoes.sql` aplicada e tipos regenerados. Ela cria:
+`offices` com `tipo, cnpj, oab_responsavel, fundador, fundacao, endereco, cidade, uf, email,
+telefone, whatsapp_comercial, telefone_suporte, site, logo_path`; `profiles.phone, oab, cargo`;
+`integration_catalog` (8 provedores, com `kind, label, description, secret_label, config_fields,
+docs_url, ordem`); `integrations` (somente leitura no cliente: `provider, kind, active, secret_name,
+secret_set_at, config, status nao_testado|teste_solicitado|validado|falhou, tested_at, last_error`);
+as RPCs `set_integration(p_office, p_provider, p_secret, p_config, p_active)` → jsonb,
+`remove_integration(p_office, p_provider)`, `request_integration_test(p_office, p_provider)`,
+`active_integration(p_office, p_kind)`; `piece_models` (biblioteca de arquivos: `name, category,
+description, file_path, mime_type, size_bytes, required, active, uploaded_by, updated_at`) e o
+bucket privado `modelos`.
+
+**Regras.**
+- O segredo (token, chave de API) só vai para o banco por `set_integration`. Nunca grave em
+  tabela, nunca leia de volta, nunca mostre. Depois de salvo, o campo mostra `••••••••` e o texto
+  "Segredo salvo em <secret_set_at>"; digitar um novo substitui.
+- Não existe tela de prompt de agente nem de `piece_templates`/`agent_prompts`. Se alguma tela
+  antiga mostrava `system_prompt`, remova. A aba Agentes lista só nome, papel, descrição, modelo e
+  o interruptor Ativo.
+- Só `admin` salva em Empresa, Integrações e Equipe. `advogado` e `admin` gerenciam Modelos.
+  Os demais só leem. Botões desabilitados com tooltip explicando.
+
+**Faça.** `/config` com sub-navegação à esquerda (lista vertical, item ativo em destaque) e o
+conteúdo à direita, como o concorrente. Rotas: `/config/perfil`, `/config/empresa`,
+`/config/integracoes`, `/config/modelos`, `/config/agentes`. `/config` redireciona para `perfil`.
+
+1. **Meu perfil.** Card com avatar (upload para o bucket `provas` em `<office_id>/avatars/<user_id>`
+   ou manter o atual), nome completo, e-mail (somente leitura, do Auth), telefone, OAB, cargo.
+   Salvar faz `update profiles`. Abaixo, card "Senha" com trocar senha (`supabase.auth.updateUser`).
+2. **Empresa.** Quatro seções em cards, na ordem: **Identificação** (tipo: Escritório / Autônomo /
+   Departamento jurídico; nome; CNPJ com máscara; OAB do responsável; fundador(a); data de fundação;
+   site; logotipo com upload para `modelos/<office_id>/logo.<ext>` gravando `logo_path`),
+   **Contato** (endereço, cidade, UF, e-mail, telefone, WhatsApp comercial, telefone do suporte),
+   **Parâmetros** (o conteúdo atual de `office_params`: ticket mínimo, faixas, vínculo mínimo,
+   alerta de prescrição, honorários %, horário de atendimento, câmbio) e **Equipe** (o conteúdo
+   atual: membros, papéis, convite). Cada card com o próprio botão Salvar e toast.
+3. **Integrações.** Uma linha de card por provedor de `integration_catalog`, ordenada por `ordem`,
+   agrupada por `kind` com títulos: Mensageria, Assinatura eletrônica, Armazenamento, Modelo de
+   linguagem, Transcrição. Cada card:
+   - Cabeçalho: `label`, `description`, link "Documentação" (`docs_url`), interruptor **Ativo**
+     (chama `set_integration(office, provider, null, null, ativo)`; em Mensageria e Assinatura
+     ligar um desliga o outro, o banco garante, a UI refaz a lista).
+   - Chip de status a partir de `integrations.status`: "Não testado" (cinza), "Teste solicitado"
+     (âmbar, com spinner), "Validado" (verde, com `tested_at`), "Falhou" (vermelho, com
+     `last_error` num tooltip). Sem linha em `integrations` = "Não configurado".
+   - Campo do segredo com `secret_label` como rótulo, tipo password, olho para revelar só o que
+     está sendo digitado. Placeholder `••••••••` quando `secret_name` não é nulo.
+   - "Configurações avançadas" recolhível, gerando os campos a partir de `config_fields`
+     (`type: text|url|boolean`, `required`) e gravando em `config`.
+   - Rodapé com três botões: **Testar** (`request_integration_test`; desabilitado sem segredo
+     salvo; o status vira "Teste solicitado" e a UI observa `integrations` por Realtime ou refetch
+     a cada 5 s até mudar), **Remover** (confirmação; `remove_integration`) e **Salvar**
+     (`set_integration` com o segredo digitado, se houver, e o `config`).
+   - Mensageria: no card **WhatsApp Cloud API (Meta)** os avançados são `phone_number_id`,
+     `waba_id`, `display_phone`. Salvar com segredo já cadastra/atualiza o número em
+     `whatsapp_numbers` (o banco faz). Remova a aba WhatsApp antiga; a lista de números fica como
+     tabela somente leitura dentro deste card.
+4. **Modelos de petição.** Cabeçalho "Modelos de petição" + subtítulo "Arquivos que a IA usa como
+   base das peças. Sem limite de quantidade." Barra com busca por nome (`ilike`), filtro por
+   categoria (Geral + as teses existentes em `piece_models.category` do escritório), filtro
+   Ativos/Todos, contador "N resultados" e botão **Novo modelo**. Tabela: Nome (com ícone pelo
+   `mime_type`), Categoria, chips **ATIVO**/inativo e **OBRIGATÓRIO** quando `required`, Atualizado
+   em (`updated_at`, relativo), Tamanho, ações Baixar (`createSignedUrl` 5 min), Editar, Excluir.
+   Novo/Editar em diálogo: nome, categoria (select com "Geral" e teses, permitindo digitar nova),
+   descrição, interruptores Ativo e Obrigatório, arquivo (upload para
+   `modelos/<office_id>/<uuid>-<nome>`; aceitar .docx, .pdf, .txt, .md; limite 25 MB; grava
+   `file_path, mime_type, size_bytes`). Excluir apaga a linha e o objeto do bucket. Ordenação
+   padrão: obrigatórios primeiro, depois nome.
+5. **Agentes.** Lista dos sete agentes (`agents` com `office_id` nulo) com nome, papel, descrição e
+   modelo; interruptor Ativo por escritório (cria/atualiza a linha de override em `agents` com
+   `office_id` do escritório e `enabled`). Nada de prompt.
+
+**Não faça.** Não leia nem exiba `secret_name`. Não crie campo de segredo em nenhuma tabela. Não
+mostre `piece_templates`, `agent_prompts` nem `system_prompt`. Não torne o bucket `modelos` público.
+
+**Critério de aceite.** Admin salva a chave da Anthropic: o campo vira `••••••••`, o status "Não
+testado", e no SQL Editor `select * from public.integrations` não tem a chave (só
+`secret_name`), enquanto `select public.integration_secret('<office>', 'anthropic')` como
+service_role devolve o valor. Testar muda o chip para "Teste solicitado". Um atendente abre
+Integrações e vê tudo desabilitado. Subir 3 arquivos em Modelos mostra "3 resultados"; marcar um
+como obrigatório mostra o chip OBRIGATÓRIO; a busca filtra pelo nome.

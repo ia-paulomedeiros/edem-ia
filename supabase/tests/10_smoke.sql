@@ -270,5 +270,94 @@ begin
   assert (select count(*) from public.lead_acquisition_cost where lead_id = v_lead) = 1, 'custo de aquisição projetado';
 end $$;
 
+-- ---------- configurações: integrações com segredo no Vault, modelos, prompts ocultos
+reset role; reset request.jwt.claim.sub;
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';   -- Bruno, admin do B
+do $$
+declare r jsonb; v_id uuid; b uuid := 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+begin
+  r := public.set_integration(b, 'meta_whatsapp', 'EAAG-token-secreto',
+        '{"phone_number_id":"PNID-B","waba_id":"WABA-B","display_phone":"5511999991111"}', true);
+  assert r->>'status' = 'nao_testado' and (r->>'has_secret')::boolean and (r->>'active')::boolean, 'integração salva';
+  assert not (r ? 'secret') and not (r ? 'secret_name'), 'projeção pública não expõe o segredo';
+  assert not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'integrations' and column_name = 'secret'), 'tabela não tem coluna de segredo';
+  assert (select token_secret_name from public.whatsapp_numbers where phone_number_id = 'PNID-B') = public.integration_secret_name(b, 'meta_whatsapp'), 'número da Meta aponta para o segredo';
+
+  -- ativar outra mensageria desativa a anterior (uma ativa por vez)
+  r := public.set_integration(b, 'datacrazy', 'dc-key', '{"instance_url":"https://dc.example"}', true);
+  assert (select active from public.integrations where office_id = b and provider = 'meta_whatsapp') = false, 'meta desativada';
+  assert public.active_integration(b, 'mensageria') = 'datacrazy', 'datacrazy ativa';
+
+  v_id := public.request_integration_test(b, 'datacrazy');
+  assert (select status from public.integrations where id = v_id) = 'teste_solicitado', 'teste solicitado';
+
+  r := public.set_integration(b, 'anthropic', 'sk-ant-x', null, true);
+  assert (select count(*) from public.integrations) = 3, 'Bruno vê as 3 integrações do B';
+  assert (select count(*) from public.integration_catalog) = 8, 'catálogo com 8 provedores';
+
+  -- funções do n8n não são executáveis pelo cliente
+  assert not has_function_privilege('authenticated', 'public.integration_secret(uuid,text)', 'execute'), 'integration_secret bloqueada';
+  assert not has_function_privilege('authenticated', 'public.integration_tested(uuid,boolean,text)', 'execute'), 'integration_tested bloqueada';
+  assert not has_function_privilege('authenticated', 'public.agent_config_full(uuid,public.case_phase)', 'execute'), 'agent_config_full bloqueada';
+
+  -- prompts e esqueletos internos não aparecem para o cliente
+  assert (select count(*) from public.agents) >= 7, 'agentes visíveis (nome, papel, modelo)';
+  assert not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'agents' and column_name = 'system_prompt'), 'prompt saiu de agents';
+  assert (select count(*) from public.agent_prompts) = 0, 'agent_prompts invisível';
+  assert (select count(*) from public.piece_templates) = 0, 'piece_templates invisível';
+
+  -- modelos de petição: biblioteca de arquivos
+  insert into public.piece_models (office_id, name, category, file_path, required)
+  values (b, 'Cabeçalho padrão', 'geral', b::text || '/cabecalho.docx', true),
+         (b, 'Horas extras — modelo', 'horas_extras', b::text || '/he.docx', false);
+  assert (select count(*) from public.piece_models) = 2, 'Bruno vê os 2 modelos';
+  assert (select count(*) from public.piece_models_for(b, 'horas_extras')) = 2, 'obrigatório + tese';
+  assert (select count(*) from public.piece_models_for(b, 'verbas_rescisorias')) = 1, 'só o obrigatório';
+
+  -- dados da empresa
+  update public.offices set cnpj = '12.345.678/0001-90', oab_responsavel = 'OAB/SP 123456', whatsapp_comercial = '5511999991111' where id = b;
+  assert (select cnpj from public.offices where id = b) = '12.345.678/0001-90', 'admin edita a empresa';
+
+  -- remover apaga a linha
+  perform public.remove_integration(b, 'anthropic');
+  assert (select count(*) from public.integrations where provider = 'anthropic') = 0, 'integração removida';
+end $$;
+
+-- Ana (advogado do A) não vê nada do B e não altera integração (não é admin)
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+do $$ begin
+  assert (select count(*) from public.integrations) = 0, 'Ana não vê integrações do B';
+  assert (select count(*) from public.piece_models) = 0, 'Ana não vê modelos do B';
+  begin
+    perform public.set_integration('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'anthropic', 'sk', null, true);
+    raise exception 'FALHOU';
+  exception when others then
+    if sqlerrm = 'FALHOU' then raise exception 'advogado não pode salvar integração'; end if;
+  end;
+end $$;
+
+-- n8n (service_role): resolve o segredo, registra o teste, lê o prompt
+reset role; reset request.jwt.claim.sub;
+do $$
+declare v_id uuid; b uuid := 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+begin
+  assert public.integration_secret(b, 'datacrazy') = 'dc-key', 'segredo resolvido';
+  assert public.integration_secret(b, 'meta_whatsapp') = 'EAAG-token-secreto', 'token da Meta resolvido';
+  assert (select decrypted_secret from vault.decrypted_secrets d join public.whatsapp_numbers w on w.token_secret_name = d.name where w.phone_number_id = 'PNID-B') = 'EAAG-token-secreto', 'token pelo número';
+  assert not exists (select 1 from vault.secrets where name = public.integration_secret_name(b, 'anthropic')), 'remover apagou o segredo do Vault';
+  select id into v_id from public.integrations where office_id = b and provider = 'datacrazy';
+  perform public.integration_tested(v_id, false, 'HTTP 401');
+  assert (select status from public.integrations where id = v_id) = 'falhou' and (select last_error from public.integrations where id = v_id) = 'HTTP 401', 'falha registrada';
+  perform public.integration_tested(v_id, true);
+  assert (select status from public.integrations where id = v_id) = 'validado' and (select last_error from public.integrations where id = v_id) is null, 'validado';
+  assert (public.agent_config_full(b, 'novo')->>'role') = 'recepcao' and (public.agent_config_full(b, 'novo') ? 'system_prompt'), 'config completa do agente com prompt';
+  -- prompt global é definido só por quem tem service_role; override do escritório (sem prompt) herda
+  update public.agent_prompts p set system_prompt = 'PROMPT GLOBAL RECEPCAO' from public.agents a where a.id = p.agent_id and a.office_id is null and a.role = 'recepcao';
+  insert into public.agents (office_id, role, name, model) values (b, 'recepcao', 'Recepção do B', 'claude-haiku-4-5-20251001');
+  assert (public.agent_config_full(b, 'novo')->>'model') = 'claude-haiku-4-5-20251001', 'override do escritório vale';
+  assert (public.agent_config_full(b, 'novo')->>'system_prompt') = 'PROMPT GLOBAL RECEPCAO', 'override herda o prompt global';
+end $$;
+
 rollback;
 \echo SMOKE OK

@@ -153,7 +153,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "select\n  l.id as lead_id, l.office_id, l.phase, c.id as conversation_id, ct.wa_id, wn.phone_number_id, wn.token_secret_name,\n  to_jsonb(a) as agent,\n  public.conversation_context(c.id, 30) as context,\n  public.lead_dossier(l.id) as dossier\nfrom public.conversations c\njoin public.leads l on l.id = c.lead_id\njoin public.contacts ct on ct.id = c.contact_id\njoin public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id\ncross join lateral public.agent_config(l.office_id, l.phase) a\nwhere c.id = $1;",
+        "query": "select\n  l.id as lead_id, l.office_id, l.phase, c.id as conversation_id, ct.wa_id, wn.phone_number_id, wn.token_secret_name,\n  public.agent_config_full(l.office_id, l.phase) as agent,\n  public.conversation_context(c.id, 30) as context,\n  public.lead_dossier(l.id) as dossier\nfrom public.conversations c\njoin public.leads l on l.id = c.lead_id\njoin public.contacts ct on ct.id = c.contact_id\njoin public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id\nwhere c.id = $1;",
         "options": {
           "queryReplacement": "={{ $json.r.conversation_id }}"
         }
@@ -500,5 +500,6 @@
   },
   "meta": {
     "notes": "Credencial Postgres = connection string do Supabase com service_role (bypassa RLS; só o n8n usa). Env: LLM_PRICE_IN_PER_MTOK, LLM_PRICE_OUT_PER_MTOK para o custo em ai_meta. O prompt de cada agente vem de public.agents.system_prompt (pendência: conteúdo). Mídia recebida: baixar via /{media_id} e subir no bucket 'provas' fica para o Sprint 3."
-  }
+  },
+  "notes": ""
 }
