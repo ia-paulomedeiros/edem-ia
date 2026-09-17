@@ -14,7 +14,7 @@ $PSQL -d postgres -c "drop database if exists $DB" -c "create database $DB"
 $PSQL -d "$DB" -f supabase/tests/00_supabase_shim.sql -o /dev/null
 
 for round in 1 2; do
-  for f in supabase/001_schema.sql supabase/002_dominio_juridico.sql supabase/003_caso_unico.sql supabase/004_dashboard.sql supabase/005_funil.sql supabase/006_dashboard_periodo.sql; do
+  for f in supabase/001_schema.sql supabase/002_dominio_juridico.sql supabase/003_caso_unico.sql supabase/004_dashboard.sql supabase/005_funil.sql supabase/006_dashboard_periodo.sql supabase/007_fila.sql; do
     $PSQL -d "$DB" -f "$f" -o /dev/null
     echo "ok  [rodada $round] $f"
   done

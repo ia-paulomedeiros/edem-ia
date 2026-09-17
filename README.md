@@ -20,10 +20,11 @@ Vault) + n8n + WhatsApp Cloud API.
 | Sprint 3 — dashboard (5 abas), UF, valor de causa, trigger de contrato | `supabase/004_dashboard.sql` | Aplicada e testada |
 | Sprint 3 — funil de venda em quatro macro-etapas com lista de leads por etapa | `supabase/005_funil.sql` | Aplicada e testada |
 | Sprint 3 — período livre, jornada por agente, produtividade da fila (desfecho), investimento Ads + tokens em BRL, protocolos | `supabase/006_dashboard_periodo.sql` | Aplicada e testada |
+| Sprint 3 — fila como esteira: grupos por tipo, P1..P4, observação, marcadores, ligações, atribuição, `v_intervention_cards` | `supabase/007_fila.sql` | Aplicada e testada |
 | Sprint 3 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos | `lovable/PROMPT-v3.md` | 6 prompts |
 | Dados de demonstração (60 leads no mês, contratos, custos) | `supabase/seed_demo.sql` | Testado; reversível |
 
-"Aplicada e testada" = `supabase/tests/run.sh` roda 001→006 duas vezes num PostgreSQL 16 limpo
+"Aplicada e testada" = `supabase/tests/run.sh` roda 001→007 duas vezes num PostgreSQL 16 limpo
 (idempotência) e passa dois testes: o smoke (ingestão idempotente, isolamento entre escritórios para
 leads, mensagens, tarefas, eventos e `lead_dossier`, trava do takeover, fase com autor, portão,
 prescrição, fila, efeitos do agente) e o de dashboard (seed de 60 leads e as cinco RPCs como membro).
@@ -40,9 +41,9 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
 
 ## Como aplicar no Supabase
 
-1. SQL Editor: colar `supabase/apply_all.sql` (001..006 juntas) e executar. Ou rodar
+1. SQL Editor: colar `supabase/apply_all.sql` (001..007 juntas) e executar. Ou rodar
    `001_schema.sql`, `002_dominio_juridico.sql`, `003_caso_unico.sql`, `004_dashboard.sql`,
-   `005_funil.sql` e `006_dashboard_periodo.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
+   `005_funil.sql`, `006_dashboard_periodo.sql` e `007_fila.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
    das individuais (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
    Opcional: `seed_demo.sql` cria 60 leads de demonstração (reversível pelo bloco LIMPEZA).
 2. Vault: criar o segredo com o token permanente da Meta (ex.: nome `wa_token_<escritorio>`).
@@ -76,7 +77,7 @@ Saída esperada termina em `SMOKE OK`.
 
 ```
 docs/       blueprint e recalibragem do backlog
-supabase/   migrations 001..006, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard)
+supabase/   migrations 001..007, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard)
 n8n/        três workflows exportados
 lovable/    prompts de build v1 (monitor), v2 (caso único) e v3 (paridade e dashboard)
 ```

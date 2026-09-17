@@ -123,6 +123,46 @@ tick vira `sent` quando o n8n roda. Sem n8n ligado, a mensagem fica em `pending`
 
 ---
 
+## Prompt 5b — Fila como esteira (kanban por tipo de tarefa)
+
+> Substitui a lista de três colunas do Prompt 5 pelo layout do concorrente. Exige `007_fila.sql`.
+
+**Contexto.** `v_intervention_cards` (uma linha por intervenção): `id, lead_id, conversation_id,
+category, grupo, grupo_titulo, grupo_ordem, reason, note, tags[], priority 1..4, status,
+requested_by_actor, claimed_by, responsavel_nome, claimed_at, resolved_at, outcome, created_at,
+contact_name, contact_phone, phase, faixa, verbas_total, prescricao_em, calls_count, msgs_count, dias`.
+Grupos, na ordem: seguir_conversa "Seguir conversa", follow "Follow", agendamento "Agendamento",
+saneamento "Saneamento", avisos "Avisos", suporte_spam "Suporte/Spam", escalados "Escalados".
+RPCs: `claim_intervention(p_id)`, `assign_intervention(p_id, p_user)` (nulo devolve à fila),
+`log_intervention_call(p_id, p_note)`, `resolve_intervention(p_id, p_resolution, p_release_ai,
+p_outcome)`. `human_interventions` está no Realtime.
+
+**Faça.**
+1. Topo: busca por nome/telefone do lead, filtro por responsável como uma fileira de avatares
+   ("Todos" + um círculo com iniciais por membro + "Sem responsável"), botão "Filtros" com
+   prioridade, grupo, faixa e marcador.
+2. Kanban horizontal com uma coluna por grupo (só os que têm cards, na ordem), cabeçalho colorido
+   por grupo com o título e o contador. Cards de `status in ('pendente','em_atendimento')`.
+3. Card: linha de chips (categoria com rótulo; prioridade "P1 · Urgente" vermelho, "P2 · Alta"
+   laranja, "P3 · Normal" azul, "P4 · Baixa" cinza; faixa "HIGH/MID/LOW TICKET" quando houver;
+   cada tag como chip âmbar, ex.: "Frágil"); nome do lead em negrito com o tempo relativo à
+   direita; `reason` como título; `note` em itálico com cor secundária; linha de contadores "Lig
+   {calls_count} · Msgs {msgs_count} · Dias {dias}"; rodapé com avatar e nome do responsável ou
+   "Sem responsável". Borda esquerda na cor do grupo.
+4. Clique no card abre um painel lateral com os detalhes, os botões Assumir / Atribuir a (select
+   de membros) / Registrar ligação (com nota opcional) / Abrir conversa / Resolver (diálogo com
+   forma, resolução e switch de devolver à IA) / Abrir caso (`/casos?caso=<lead_id>`).
+5. Realtime em `human_interventions` (filtro `office_id`): cards entram, mudam de coluna e somem
+   sem refresh. Contador de pendentes no menu continua.
+6. Uma aba secundária "Resolvidas" com tabela dos últimos 7 dias (lead, tipo, forma, responsável,
+   tempo até resolver).
+
+**Critério de aceite.** Os cards do seed aparecem distribuídos por grupos, com prioridade,
+ticket, marcadores e contadores. Atribuir um card a um membro move o card para "em atendimento"
+com o avatar. Registrar ligação incrementa "Lig" sem refresh.
+
+---
+
 ## Prompt 5 — Fila de intervenção e cadastro do número
 
 **Contexto.** `human_interventions(office_id, lead_id, conversation_id, category, reason, priority 1..3,

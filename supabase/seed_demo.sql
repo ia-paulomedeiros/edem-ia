@@ -6,7 +6,7 @@
 -- assinados espalhados pelos dias, UFs variadas e alguns encerrados.
 -- Tudo marcado com wa_id começando em '5500' para poder apagar depois.
 --
--- Rodar no SQL Editor depois de 001..006. Pode rodar mais de uma vez (apaga
+-- Rodar no SQL Editor depois de 001..007. Pode rodar mais de uma vez (apaga
 -- e recria o demo). Para remover: rode só o bloco "LIMPEZA".
 -- =============================================================================
 
@@ -114,13 +114,16 @@ begin
     -- intervenções: ~35% dos leads; a maioria resolvida com desfecho e responsável
     if random() < 0.35 then
       perform public.request_intervention(v_lead, v_conv,
-        (array['agendamento','caso_escalado','follow_up_esgotado','seguir_conversa','contrato_nao_assinado_24h','ia_sem_resposta','duvida_juridica','cliente_ja_existente'])[1 + (random()*7)::int],
-        'Demo: a IA pediu ajuda', 1 + (random()*2)::int, 'ia',
-        (array['recepcao','qualificacao','provas','calculo','contrato'])[1 + (random()*4)::int]);
+        (array['agendamento','caso_escalado','follow_up_esgotado','seguir_conversa','contrato_nao_assinado_24h','ia_sem_resposta','duvida_juridica','cliente_ja_existente','saneamento_juridico','caso_parado','spam'])[1 + (random()*10)::int],
+        (array['Contrato pendente >24h','Caso parado >48h','Retorno combinado para continuar o cadastro','IA não respondeu há 30+ min','Corrigir peça: revisor devolveu','Cliente existente chegou no número comercial','Escalado para humano pelo agente','Lead sem atividade >96h'])[1 + (random()*7)::int],
+        1 + (random()*3)::int, 'ia',
+        (array['recepcao','qualificacao','provas','calculo','contrato'])[1 + (random()*4)::int],
+        (array['Cliente pediu para retomar no dia seguinte.', 'Revisor devolveu a peça para correção. Veja a observação no detalhe.', 'Verificar lead: IA travada há +30 min.', 'Cliente disse que já é atendido pelo escritório e perguntou pelo andamento.', null, null])[1 + (random()*5)::int],
+        case when random() < 0.2 then array['fragil'] else '{}'::text[] end);
       update public.human_interventions h
-         set created_at = v_dia + time '10:00'
+         set created_at = v_dia + time '10:00', calls_count = (random() * 2)::int
        where h.lead_id = v_lead and h.status = 'pendente';
-      if random() < 0.75 then
+      if random() < 0.7 then
         update public.human_interventions h
            set status = 'resolvida', claimed_by = v_member, claimed_at = v_dia + time '11:00',
                resolved_at = v_dia + time '11:00' + (random() * interval '40 hours'),

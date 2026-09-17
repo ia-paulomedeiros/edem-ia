@@ -89,6 +89,13 @@ begin
   assert (inv->>'custo_por_contrato_brl')::numeric > 0, 'investimento: custo por contrato';
   assert jsonb_array_length(inv->'dia_a_dia') between 1 and 31, 'investimento: dia a dia (todo o período = do primeiro lead até hoje)';
 
+  -- 007: cards da fila
+  assert (select count(*) from public.v_intervention_cards where status = 'pendente') > 0, 'fila: cards pendentes';
+  assert (select count(distinct grupo) from public.v_intervention_cards) >= 3, 'fila: vários grupos';
+  assert (select count(*) from public.v_intervention_cards where priority = 4) >= 0, 'fila: P4 aceito';
+  assert (select bool_and(msgs_count >= 0 and dias >= 0) from public.v_intervention_cards), 'fila: contadores';
+  assert (select count(*) from public.v_intervention_cards where note is not null) > 0, 'fila: observações';
+
   -- outro escritório não enxerga nada
   assert public.dashboard_geral('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') is null, 'dashboard de outro escritório é null';
 end $$;

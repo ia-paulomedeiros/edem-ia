@@ -219,6 +219,13 @@ begin
   select * into h from public.human_interventions;
   h := public.claim_intervention(h.id);
   assert h.status = 'em_atendimento' and h.claimed_by = '11111111-1111-1111-1111-111111111111', 'assumiu';
+  h := public.assign_intervention(h.id, null);
+  assert h.status = 'pendente' and h.claimed_by is null, 'devolveu para a fila';
+  h := public.assign_intervention(h.id, '11111111-1111-1111-1111-111111111111');
+  assert h.status = 'em_atendimento', 'atribuiu';
+  h := public.log_intervention_call(h.id, 'ligou, caixa postal');
+  assert h.calls_count = 1, 'ligação registrada';
+  assert (select count(*) from public.case_events where type = 'call_logged') = 1, 'evento de ligação';
   h := public.resolve_intervention(h.id, 'Expliquei e seguimos', true);
   assert h.status = 'resolvida', 'resolvida';
   select id into v_conv from public.conversations;
