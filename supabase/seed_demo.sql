@@ -6,13 +6,14 @@
 -- assinados espalhados pelos dias, UFs variadas e alguns encerrados.
 -- Tudo marcado com wa_id começando em '5500' para poder apagar depois.
 --
--- Rodar no SQL Editor depois de 001..004. Pode rodar mais de uma vez (apaga
+-- Rodar no SQL Editor depois de 001..006. Pode rodar mais de uma vez (apaga
 -- e recria o demo). Para remover: rode só o bloco "LIMPEZA".
 -- =============================================================================
 
 -- ---------- LIMPEZA (apaga só o que é demo)
 delete from public.leads where contact_id in (select id from public.contacts where wa_id like '5500%');
 delete from public.contacts where wa_id like '5500%';
+delete from public.ad_spend where canal = 'meta_ads' and nota is null and office_id = (select id from public.offices order by created_at limit 1);
 
 -- ---------- GERAÇÃO
 do $$
@@ -99,11 +100,42 @@ begin
       end if;
     end if;
 
-    -- algumas intervenções abertas para a fila
-    if random() < 0.08 then
-      perform public.request_intervention(v_lead, v_conv, 'duvida_juridica', 'Lead pergunta se pode fazer acordo direto com a empresa', 2, 'ia', 'calculo');
+    -- peça para parte dos contratados; metade protocolada
+    if exists (select 1 from public.contracts where lead_id = v_lead and status = 'assinado') and random() < 0.6 then
+      insert into public.pieces (office_id, lead_id, tese, content, status, generated_by_actor)
+      values (v_office, v_lead, 'verbas_rescisorias', 'Minuta gerada (demo)', 'rascunho', 'ia');
+      if random() < 0.5 then
+        update public.pieces set status = 'protocolada', protocolo = 'ATSum ' || (1000 + i)::text || '-2026',
+               protocolado_em = v_dia + interval '2 days' + time '11:00'
+         where lead_id = v_lead;
+      end if;
+    end if;
+
+    -- intervenções: ~35% dos leads; a maioria resolvida com desfecho e responsável
+    if random() < 0.35 then
+      perform public.request_intervention(v_lead, v_conv,
+        (array['agendamento','caso_escalado','follow_up_esgotado','seguir_conversa','contrato_nao_assinado_24h','ia_sem_resposta','duvida_juridica','cliente_ja_existente'])[1 + (random()*7)::int],
+        'Demo: a IA pediu ajuda', 1 + (random()*2)::int, 'ia',
+        (array['recepcao','qualificacao','provas','calculo','contrato'])[1 + (random()*4)::int]);
+      update public.human_interventions h
+         set created_at = v_dia + time '10:00'
+       where h.lead_id = v_lead and h.status = 'pendente';
+      if random() < 0.75 then
+        update public.human_interventions h
+           set status = 'resolvida', claimed_by = v_member, claimed_at = v_dia + time '11:00',
+               resolved_at = v_dia + time '11:00' + (random() * interval '40 hours'),
+               resolution = 'Demo', outcome = (array['sanado','cliente_perdido','follow_up_agendado','cliente_retomado','reativado_para_agente','assumido_pelo_humano','outro'])[1 + (random()*6)::int]
+         where h.lead_id = v_lead and h.status = 'pendente';
+        update public.conversations set ai_paused = false where id = v_conv;
+      end if;
     end if;
   end loop;
+
+  -- gasto com anúncios: um valor por dia do mês
+  insert into public.ad_spend (office_id, dia, canal, valor)
+  select v_office, d::date, 'meta_ads', (80 + random() * 220)::int
+  from generate_series(v_inicio, v_fim, interval '1 day') d
+  on conflict (office_id, dia, canal) do update set valor = excluded.valor;
 end $$;
 
 select 'demo criado' as status, count(*) as leads from public.leads l join public.contacts c on c.id = l.contact_id where c.wa_id like '5500%';

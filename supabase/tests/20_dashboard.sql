@@ -48,16 +48,46 @@ begin
 
   j := public.dashboard_jornada('cccccccc-cccc-cccc-cccc-cccccccccccc');
   assert (j->>'primeira_resposta_min')::numeric between 0.5 and 2, 'jornada: primeira resposta ~1 min';
-  assert jsonb_array_length(j->'horas_por_fase') > 0, 'jornada: horas por fase';
+  assert jsonb_array_length(j->'etapas') = 7, 'jornada: sete etapas por agente';
 
   p := public.dashboard_produtividade('cccccccc-cccc-cccc-cccc-cccccccccccc');
   assert jsonb_array_length(p->'membros') = 1, 'produtividade: 1 membro';
   assert (p->'ia'->>'mensagens')::int = 120, 'produtividade: 120 mensagens da IA';
 
   inv := public.dashboard_investimento('cccccccc-cccc-cccc-cccc-cccccccccccc');
-  assert (inv->>'custo_usd')::numeric > 0, 'investimento: custo > 0';
-  assert (inv->>'leads_atendidos')::int = 60, 'investimento: 60 leads';
+  assert (inv->>'tokens_usd')::numeric > 0, 'investimento: custo em tokens > 0';
+  assert (inv->>'mensagens_ia')::int = 120, 'investimento: 120 mensagens da IA';
   assert jsonb_array_length(inv->'por_agente') = 2, 'investimento: 2 agentes';
+
+  -- 006: período livre, jornada por agente, produtividade da fila, investimento em BRL
+  g := public.dashboard_geral_p('cccccccc-cccc-cccc-cccc-cccccccccccc', null, null);
+  assert (g->'fechados'->>'periodo')::int = (g->'fechados'->>'mes')::int, 'geral_p: todo o período = mês (demo só tem este mês)';
+  g := public.dashboard_geral_p('cccccccc-cccc-cccc-cccc-cccccccccccc', current_date, current_date);
+  assert jsonb_array_length(g->'por_dia') = 1, 'geral_p: hoje = 1 dia';
+  assert (g->'fechados'->>'periodo')::int = (g->'fechados'->>'hoje')::int, 'geral_p: hoje bate';
+
+  j := public.dashboard_jornada_p('cccccccc-cccc-cccc-cccc-cccccccccccc');
+  assert jsonb_array_length(j->'etapas') = 7, 'jornada: 7 etapas';
+  assert (j->'etapas'->0->>'n')::int = 60 and (j->'etapas'->0->>'pct_topo')::int = 100, 'jornada: recepção = todos';
+  assert (j->'etapas'->0->>'concluido')::int + (j->'etapas'->0->>'em_fluxo')::int <= 60, 'jornada: concluído + em fluxo <= n';
+  assert (j->'etapas'->0->>'concluido')::int > 0, 'jornada: recepção tem concluídos';
+  assert (j->'etapas'->5->>'n')::int >= (f->>'contratos')::int, 'jornada: briefing >= contratos';
+  assert (select count(*) from public.dashboard_jornada_leads_p('cccccccc-cccc-cccc-cccc-cccccccccccc', 'recepcao')) = 60, 'jornada_leads: recepção lista todos';
+
+  p := public.dashboard_produtividade_p('cccccccc-cccc-cccc-cccc-cccccccccccc');
+  assert (p->>'concluidas')::int > 0, 'produtividade: concluídas > 0';
+  assert (p->>'tempo_medio_horas')::numeric > 0, 'produtividade: tempo médio';
+  assert jsonb_array_length(p->'por_forma') > 1, 'produtividade: por forma';
+  assert jsonb_array_length(p->'por_tipo') > 1, 'produtividade: por tipo';
+  assert (p->'maior_produtor'->>'nome') = 'Demo', 'produtividade: maior produtor';
+  assert (select sum((x->>'concluidas')::int) from jsonb_array_elements(p->'por_dia') x) = (p->>'concluidas')::int, 'produtividade: por dia soma';
+
+  inv := public.dashboard_investimento_p('cccccccc-cccc-cccc-cccc-cccccccccccc');
+  assert (inv->>'ads_brl')::numeric > 0 and (inv->>'tokens_brl')::numeric > 0, 'investimento: ads e tokens';
+  assert (inv->>'investimento_total_brl')::numeric = (inv->>'ads_brl')::numeric + (inv->>'tokens_brl')::numeric, 'investimento: total = ads + tokens';
+  assert (inv->>'protocolos')::int > 0, 'investimento: protocolos';
+  assert (inv->>'custo_por_contrato_brl')::numeric > 0, 'investimento: custo por contrato';
+  assert jsonb_array_length(inv->'dia_a_dia') between 1 and 31, 'investimento: dia a dia (todo o período = do primeiro lead até hoje)';
 
   -- outro escritório não enxerga nada
   assert public.dashboard_geral('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') is null, 'dashboard de outro escritório é null';
