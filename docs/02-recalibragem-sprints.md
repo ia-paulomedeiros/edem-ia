@@ -17,17 +17,29 @@ Fluxo de Trabalho, Intervenção humana, Jurídico, Agendamentos, Clientes, Fina
 Marketing. Rodapé com usuário, papel e ações: notificações, tema escuro, configurações, sair,
 recolher.
 
-**Dashboard.** Filtro por mês e por agente. Cinco abas: Geral, Funil de Venda, Jornada do Cliente,
-Produtividade Humana, Investimento Financeiro. Na aba Geral: contratos fechados (hoje, semana,
-mês, em anéis), contratos fechados por dia (barras), regiões que mais fecham por UF (barras
-horizontais), contratos por tipo de ticket (HT/MT/LT com quantidade e valor, total), valor de
-causa gerado por dia (área).
+**Dashboard.** Filtro de período (Todo o período, Hoje, Ontem, Últimos 7 dias, Este mês,
+Personalizado) e por agente/usuário; "Limpar tudo". Cinco abas:
+- *Geral*: contratos fechados (hoje, semana, mês, em anéis), contratos por dia (barras), regiões
+  por UF (barras horizontais), contratos por tipo de ticket (HT/MT/LT com quantidade e valor,
+  total), valor de causa por dia (área).
+- *Funil de Venda*: quatro macro-etapas (novos leads, taxa de abertura com régua de 2+ msgs, links
+  enviados, contratos fechados) em funil e em cards com % do topo, conversão da etapa e intervenção
+  humana; clique lista os leads; contratos por ticket ao lado.
+- *Jornada do Cliente*: cards por agente (concluído, em fluxo, intervenção humana) com o tempo médio
+  entre etapas; clique lista os clientes.
+- *Produtividade Humana*: intervenções concluídas, em andamento, tempo médio, maior produtor; "por
+  forma" (desfecho), "por tipo de tarefa", ranking por pessoa, conclusões por dia.
+- *Investimento Financeiro*: Ads + tokens em BRL cruzado com contratos e protocolos, total e dia a
+  dia, custo por contrato e por protocolo.
 
 **Mapa para o nosso schema.**
 
 | Item do concorrente | Nosso | Estado |
 |---|---|---|
-| Dashboard (5 abas) | `dashboard_geral/funil/jornada/produtividade/investimento` (004) | RPCs prontas; UI em `PROMPT-v3` |
+| Dashboard (5 abas, período livre) | `dashboard_*_p` (004..006) | RPCs prontas; UI em `PROMPT-v3` |
+| Gasto com anúncios | `ad_spend` (006) | 006 |
+| Desfecho da intervenção (por forma) | `human_interventions.outcome` (006) | 006 |
+| Protocolos | `pieces.protocolado_em` (006) | 006 |
 | Fluxo de Trabalho | `/casos` (kanban + lista sobre `v_case_cards`) | `PROMPT-v2` |
 | Intervenção humana | `/fila` sobre `human_interventions` | `PROMPT-v1` |
 | Jurídico | `/juridico`: `contracts` + `pieces` + `piece_templates` | `PROMPT-v3` |

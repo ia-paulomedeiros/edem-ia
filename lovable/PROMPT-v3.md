@@ -9,10 +9,12 @@ logotipo, paleta e textos não.
 
 - v1 concluído até o Prompt 2 (login, escritório ativo, inbox). Os demais prompts do v1 e todo o v2
   continuam válidos e entram depois; este v3 só reorganiza a casca e adiciona o dashboard.
-- `supabase/004_dashboard.sql` e `005_funil.sql` aplicadas. Elas criam `contacts.uf`,
-  `contracts.valor_causa/faixa`, o trigger de contrato e as RPCs `dashboard_geral`, `dashboard_funil`
-  (com as quatro macro-etapas), `dashboard_funil_leads`, `dashboard_jornada`,
-  `dashboard_produtividade`, `dashboard_investimento`.
+- `supabase/004_dashboard.sql`, `005_funil.sql` e `006_dashboard_periodo.sql` aplicadas. Elas criam
+  `contacts.uf`, `contracts.valor_causa/faixa`, `ad_spend`, `pieces.protocolado_em`,
+  `human_interventions.outcome`, `office_params.cambio_usd_brl`, os triggers de contrato e peça, e
+  as RPCs por período: `dashboard_geral_p`, `dashboard_funil_p`, `dashboard_funil_leads_p`,
+  `dashboard_jornada_p`, `dashboard_jornada_leads_p`, `dashboard_produtividade_p`,
+  `dashboard_investimento_p` (todas com `p_from`/`p_to`; as versões por mês continuam existindo).
 - `supabase/seed_demo.sql` rodado uma vez, para o dashboard não nascer vazio.
 - Tipos do Supabase regenerados.
 
@@ -128,70 +130,128 @@ preenchidos. Mudar o mês para o anterior zera tudo (sem erro). Escolher um agen
 
 ---
 
-## Prompt 3 — Dashboard, as outras quatro abas
+## Prompt 3 — Filtro de período e as outras abas
 
-**Contexto.** Quatro RPCs, mesma assinatura de mês (e `p_member` nas duas primeiras):
+Dividido em quatro entregas (3a a 3d). Uma por vez.
 
-`dashboard_funil` →
-```
-{ leads,
-  macro: [ { ordem: 1..4, etapa: 'novos_leads'|'abertura'|'links_enviados'|'contratos',
-             titulo, regua: null|'2+ msgs', n, pct_topo, conv_etapa: null|número, interv_humana } ],
-  etapas: [ { fase, alcancaram, taxa } ... 8 fases sem 'encerrado' ],
-  atual: [ { fase, leads } ], encerrados: { ia, equipe },
-  qualificacao: { aprovados, reprovados }, contratos }
-```
-`dashboard_funil_leads(p_office, p_etapa, p_month, p_member)` → linhas de `v_case_cards` dos leads
-daquela macro-etapa (para o clique no card).
-`dashboard_jornada` →
-```
-{ horas_por_fase: [ { fase, media_horas, n } ], primeira_resposta_min, dias_ate_contrato, mensagens_por_lead }
-```
-`dashboard_produtividade` →
-```
-{ membros: [ { user_id, nome, role, takeovers, mensagens, fases_movidas, intervencoes_resolvidas,
-               contratos_assinados, provas_validadas } ],
-  ia: { mensagens, fases_movidas, intervencoes_pedidas } }
-```
-`dashboard_investimento` →
-```
-{ custo_usd, tokens_in, tokens_out, mensagens_ia, leads_atendidos, custo_por_lead_usd,
-  contratos_assinados, custo_por_contrato_usd, valor_causa_gerado,
-  por_agente: [ { agente, mensagens, custo_usd } ], por_dia: [ { dia, custo_usd } ] }
-```
+### 3a — Filtro de período (substitui o navegador de mês)
 
-Nomes das fases em português na UI: novo → Novo, triagem → Triagem, qualificacao → Qualificação,
-provas → Provas, calculo → Cálculo, contrato → Contrato, briefing → Briefing, peca → Peça,
-encerrado → Encerrado. Centralize num `PHASE_LABELS`.
+**Contexto.** Todas as RPCs `*_p` recebem `p_from date` e `p_to date` (inclusivo). `p_from` nulo
+= "todo o período" (desde o primeiro lead). `p_to` nulo = hoje. Elas devolvem também
+`periodo: { de, ate }`.
 
 **Faça.**
-1. **Funil de Venda** (layout do concorrente): à esquerda um card com o funil em trapézio (SVG,
-   quatro degraus com `n` e `pct_topo`) e a legenda das quatro etapas de `macro`; à direita quatro
-   cards numerados 01..04 (título, número grande, `pct_topo`, barra de progresso, e duas linhas de
-   rodapé: "TOPO DO FUNIL 100%" no primeiro, "RÉGUA 2+ msgs" no segundo, "CONV. DA ETAPA x%" nos
-   demais; em todos "INTERV. HUMANA n"). O card clicado fica destacado com fundo primária e texto
-   branco. Abaixo à esquerda, o widget "Contratos por tipo (ticket)" reaproveitado da aba Geral
-   (mesmo componente, dados de `dashboard_geral.por_faixa`). Abaixo à direita, painel "Clique em
-   uma etapa acima para ver os leads": ao clicar, chama `dashboard_funil_leads` e lista os leads em
-   tabela (nome, telefone, fase, última mensagem, UF, selo IA/Equipe); clique na linha abre
-   `?caso=<lead_id>` (ou `/casos?caso=` enquanto o modal do v2 não existir). Etapa escolhida em
-   `?etapa=`. Mantenha, num acordeão recolhido "Detalhe por fase", os dados de `etapas`, `atual`,
-   `encerrados` e `qualificacao` como barras simples.
-2. **Jornada do Cliente**: quatro cards de KPI (primeira resposta em minutos, dias até contrato,
-   mensagens por lead, fases com dado) e um gráfico de barras "Horas médias por fase" na ordem
-   das fases.
-3. **Produtividade Humana**: tabela por membro (avatar, nome, papel, e as seis métricas), com
-   ordenação por coluna, e um card à direita "IA no mês" com as três métricas da IA. Barra
-   empilhada comparando mensagens humano vs IA.
-4. **Investimento Financeiro**: cards custo total (USD, 2 casas), custo por lead, custo por contrato,
-   valor de causa gerado (BRL); gráfico de linha "Custo por dia"; barras "Custo por agente" com o
-   nome do agente traduzido (recepcao → Recepção, qualificacao → Qualificação, provas → Provas,
-   calculo → Cálculo, contrato → Contrato, briefing → Briefing, redacao → Redação). Nota de rodapé:
-   "Custo derivado do uso reportado pelo modelo; câmbio não aplicado".
-5. Um hook por RPC, mesma convenção de chave do Prompt 2. A aba ativa fica em `?aba=`.
+1. Trocar o navegador de mês por um select de período com as opções, nesta ordem: Todo o período,
+   Hoje, Ontem, Últimos 7 dias, Este mês (padrão), Personalizado (abre um range picker com dois
+   calendários). O rótulo do botão mostra a opção ou "dd/MM a dd/MM" no personalizado.
+2. Estado na URL: `?periodo=hoje|ontem|7d|mes|tudo|custom&de=YYYY-MM-DD&ate=YYYY-MM-DD`.
+3. Um hook `usePeriodo()` que traduz a opção em `{ de, ate }` (nulos quando "tudo") e é a única
+   fonte para todas as abas. Migrar as abas Geral e Funil para `dashboard_geral_p`,
+   `dashboard_funil_p` e `dashboard_funil_leads_p` com `p_from`/`p_to`.
+4. "Limpar tudo" volta para Este mês e Todos os agentes.
+5. Na aba Geral, o widget "Contratos fechados" passa a ter quatro anéis: Hoje, Esta semana, Este
+   mês e Período (o anel cheio é o do período; os outros proporcionais a ele).
 
-**Critério de aceite.** As cinco abas trocam sem recarregar, respeitam o mês e o agente, e
-nenhuma mostra número fixo. Mudar de escritório (se houver mais de um) recarrega tudo.
+**Critério de aceite.** "Hoje" mostra um único dia nos gráficos por dia; "Todo o período" mostra
+desde o primeiro lead; "Personalizado" respeita as duas datas; o funil recalcula a coorte.
+
+### 3b — Jornada do Cliente
+
+**Contexto.** `dashboard_jornada_p(p_office, p_from, p_to, p_member)` →
+```
+{ leads,
+  etapas: [ { ordem: 1..7, agente: 'recepcao'|'qualificacao'|'provas'|'calculo'|'contrato'|'briefing'|'redacao',
+              titulo, fases: [...], n, pct_topo, concluido, em_fluxo, interv_humana, tempo_medio_horas } ],
+  primeira_resposta_min, dias_ate_contrato, mensagens_por_lead }
+```
+`dashboard_jornada_leads_p(p_office, p_agente, p_from, p_to, p_member)` → linhas de `v_case_cards`
+dos leads que chegaram àquela etapa.
+
+**Faça.**
+1. Uma linha horizontal rolável de sete cards numerados 01..07, um por etapa: ícone, título
+   (nome do agente), número grande `n`, `pct_topo%`, barra de progresso, e três linhas de rodapé
+   em caixa alta pequena: "CONCLUÍDO {concluido}", "EM FLUXO {em_fluxo}", "INTERV. HUMANA
+   {interv_humana}". Entre um card e o seguinte, um conector "≫" com `tempo_medio_horas` da etapa
+   anterior formatado como "8 min", "10 horas" ou "1d 18h". Card clicado fica com fundo primária.
+2. Abaixo, painel "Clique em uma etapa acima para ver os clientes." que, ao clicar, chama
+   `dashboard_jornada_leads_p` e lista em tabela (nome, telefone, fase atual, última mensagem,
+   selo IA/Equipe, prescrição). Clique na linha abre `/casos?caso=<lead_id>`. Etapa em `?etapa=`.
+3. Três KPIs pequenos acima dos cards: primeira resposta (min), dias até contrato, mensagens por
+   lead.
+
+**Critério de aceite.** Os sete cards mostram números decrescentes ou iguais; clicar em "Contrato"
+lista os leads que chegaram a contrato; o conector entre Recepção e Qualificação mostra um tempo.
+
+### 3c — Produtividade Humana
+
+**Contexto.** `dashboard_produtividade_p(p_office, p_from, p_to, p_member)` →
+```
+{ concluidas, em_andamento, pendentes, tempo_medio_horas, pessoas, tipos,
+  maior_produtor: { user_id, nome, concluidas } | null,
+  por_forma: [ { forma, n, pct } ], por_tipo: [ { tipo, n, pct } ],
+  ranking: [ { user_id, nome, concluidas, tempo_medio_horas } ],
+  por_dia: [ { dia, concluidas } ],
+  membros: [ { user_id, nome, takeovers, mensagens, fases_movidas, contratos_assinados } ],
+  ia: { mensagens, fases_movidas, intervencoes_pedidas } }
+```
+Nesta aba o filtro de agente vira "Todos os usuários" e passa `p_member` = quem resolveu.
+Rótulos das formas: `sanado` Sanado, `cliente_perdido` Cliente perdido, `follow_up_agendado`
+Agendar follow-up, `cliente_retomado` Cliente retomado, `reativado_para_agente` Reativado para o
+agente, `assumido_pelo_humano` Assumido pelo humano, `tarefa_cancelada` Tarefa cancelada, `outro`
+Outro, `nao_informada` Não informada. Tipos: `agendamento` Agendamento, `caso_escalado` Caso
+escalado, `follow_up_esgotado` Follow-up esgotado, `seguir_conversa` Seguir conversa,
+`contrato_nao_assinado_24h` Contrato não assinado (24h), `ia_sem_resposta` IA sem resposta,
+`cliente_ja_existente` Cliente já existente, `duvida_juridica` Dúvida jurídica, `fora_de_escopo`
+Fora de escopo, `cliente_insatisfeito` Cliente insatisfeito, `pedido_de_humano` Pedido de humano,
+`erro_ia` Erro da IA, `prescricao` Prescrição, `outro` Outro.
+
+**Faça.**
+1. Quatro cards no topo: "Intervenções concluídas" (número grande com ícone), "Em andamento
+   (agora)" com legenda "assumidas e não concluídas", "Tempo médio" formatado "1d 18h" com legenda
+   "abertura → conclusão · {pessoas} pessoas · {tipos} tipos", "Maior produtor" com nome e
+   "{concluidas} intervenções".
+2. Três colunas: "Por forma" (lista com barra, % e n, ordenada por n), "Por tipo de tarefa"
+   (idem, com clique para filtrar a lista de ranking), "Ranking por pessoa" (avatar com posição,
+   nome, barra, "{concluidas} concluídas · {tempo} médio").
+3. "Linha do tempo — conclusões por dia": barras finas com o número em cima de cada dia.
+4. Um acordeão "Outras atividades" com a tabela `membros` e o card `ia`.
+5. Na página `/fila` (v1), o diálogo de Resolver ganha o select "Forma de resolução" com as
+   formas acima, enviado como `p_outcome` para `resolve_intervention`.
+
+**Critério de aceite.** Com o seed, aparecem várias formas e tipos, o ranking tem o usuário do
+escritório e a linha do tempo tem barras. Resolver uma intervenção na fila com uma forma faz o
+número "Por forma" subir.
+
+### 3d — Investimento Financeiro
+
+**Contexto.** `dashboard_investimento_p(p_office, p_from, p_to)` →
+```
+{ cambio_usd_brl, investimento_total_brl, ads_brl, tokens_brl, tokens_usd, tokens_in, tokens_out,
+  mensagens_ia, contratos_fechados, custo_por_contrato_brl, protocolos, custo_por_protocolo_brl,
+  valor_causa_gerado, por_agente: [ { agente, mensagens, custo_usd, custo_brl } ],
+  dia_a_dia: [ { dia, ads_brl, tokens_brl, investimento_brl, contratos, custo_por_contrato_brl,
+                 protocolos, custo_por_protocolo_brl } ]  // mais recente primeiro
+}
+```
+`ad_spend(office_id, dia, canal 'meta_ads'|'google_ads'|'tiktok_ads'|'outro', valor, nota)` é onde o
+escritório lança o gasto com anúncios (admin e advogado escrevem). `office_params.cambio_usd_brl`
+converte o custo de tokens.
+
+**Faça.**
+1. Cabeçalho da aba com título e a frase "Custo de aquisição dia a dia: investimento total
+   (Ads + Tokens) cruzado com os contratos fechados e os protocolos no dia. O custo é o investimento
+   dividido pela quantidade — por contrato e por protocolo."
+2. Cinco cards: Investimento total (BRL), Contratos fechados, Custo / contrato, Protocolos, Custo /
+   protocolo. Valores nulos aparecem como "—".
+3. Tabela "Dia a dia": Dia, Ads, Tokens, Investimento (com uma mini barra proporcional ao maior
+   do período), Contratos, Custo / contrato, Protocolos, Custo / protocolo. Mais recente primeiro.
+4. Botão "Lançar gasto com anúncios" (admin/advogado): diálogo com dia, canal e valor; `upsert`
+   em `ad_spend` por (office_id, dia, canal). A tabela atualiza por Realtime em `ad_spend`.
+5. Rodapé: "Tokens convertidos a R$ {cambio_usd_brl} por USD (Configurações → Parâmetros)" e um
+   card pequeno "Por agente" com custo em BRL.
+
+**Critério de aceite.** Lançar R$ 100 em anúncios para hoje muda o Investimento total e o custo por
+contrato do dia sem refresh. Os totais dos cards batem com a soma da tabela.
 
 ---
 
