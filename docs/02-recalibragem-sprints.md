@@ -42,9 +42,9 @@ Personalizado) e por agente/usuário; "Limpar tudo". Cinco abas:
 | Protocolos | `pieces.protocolado_em` (006) | 006 |
 | Fluxo de Trabalho | `/casos` (kanban + lista sobre `v_case_cards`) | `PROMPT-v2` |
 | Intervenção humana | `/fila` sobre `human_interventions` | `PROMPT-v1` |
-| Jurídico | `/juridico`: `contracts` + `pieces` | `PROMPT-v3` |
+| Jurídico (esteira: Revisão, Aguardando, Saneamento, Pronto p/ protocolo, Protocolado) | `pieces.status` + `alerta` + `responsavel`, `v_legal_cards`, `ui_set_piece_status` (010) | 010; UI em `PROMPT-v3` Prompt 9 |
 | Configurações (Meu perfil, Empresa, Integrações, Modelos de petição) | `offices` cadastral, `integrations` + Vault, `piece_models` + bucket `modelos` (008) | 008; UI em `PROMPT-v3` Prompt 7 |
-| Agendamentos | `/agendamentos` sobre `tasks.due_at` | `PROMPT-v3` |
+| Agendamentos (agenda por dia, retornos marcados pela IA) | `v_tasks`, `apply_agent_effects(p_task)` (010) | 010; UI em `PROMPT-v3` Prompt 9 |
 | Clientes | `/clientes`: contatos com contrato assinado (`contacts.uf`) | `PROMPT-v3` |
 | Finalizados | `/finalizados`: `leads.phase='encerrado'` + `closed_by` | `PROMPT-v3` |
 | Histórico | `/historico`: feed de `case_events` | `PROMPT-v3` |
@@ -92,6 +92,9 @@ Marketing (`009_marketing.sql`): lançamentos por dia com anúncios e tokens, ma
 (Meta Ads, Anthropic Admin, OpenAI Admin via `n8n/04`); nos dias sem lançamento de tokens vale a
 estimativa pelas mensagens; custo por lead = tokens do caso + rateio dos anúncios do dia, e média
 do mês, dentro do dossiê.
+Jurídico e agenda (`010_juridico_agenda.sql`): a peça anda numa esteira própria depois do contrato,
+com alerta no card e responsável; o agente marca retornos como tarefas (autor IA); funções com
+`search_path` fixo e execução só para authenticated/service_role.
 
 ### Sprint 3b — Assinatura eletrônica e mídia
 Integração com um provedor de assinatura (webhook de assinado → `contracts.status='assinado'`, que

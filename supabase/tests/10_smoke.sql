@@ -359,5 +359,54 @@ begin
   assert (public.agent_config_full(b, 'novo')->>'system_prompt') = 'PROMPT GLOBAL RECEPCAO', 'override herda o prompt global';
 end $$;
 
+-- ---------- 010: esteira jurídica, tarefa criada pelo agente, privilégios
+reset role; reset request.jwt.claim.sub;
+do $$
+declare v_lead uuid; r jsonb; b uuid := 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+begin
+  select id into v_lead from public.leads where office_id = b limit 1;
+  insert into public.pieces (office_id, lead_id, tese, status, generated_by_actor) values (b, v_lead, 'horas_extras', 'rascunho', 'ia');
+  r := public.apply_agent_effects(v_lead, null, 'recepcao', null, null, null, null,
+         '{"title":"Retomar amanhã às 09:00","description":"Faltam 3 perguntas da varredura de teses","due_at":"2030-01-01T12:00:00Z"}'::jsonb);
+  assert r ? 'task_id', 'agente cria tarefa';
+  assert (select created_by_actor from public.tasks where id = (r->>'task_id')::uuid) = 'ia', 'tarefa com autor IA';
+  assert (select situacao from public.v_tasks where id = (r->>'task_id')::uuid) = 'pendente', 'tarefa pendente';
+  assert (select count(*) from public.case_events where type = 'task_created' and actor = 'ia' and lead_id = v_lead) = 1, 'evento task_created pela IA';
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';   -- Bruno, admin do B
+do $$
+declare v_piece uuid; p public.pieces; b uuid := 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+begin
+  assert (select count(*) from public.v_legal_cards) = 1, 'Bruno vê 1 card jurídico';
+  select piece_id into v_piece from public.v_legal_cards where office_id = b;
+  assert (select etapa from public.v_legal_cards where piece_id = v_piece) = 'Em redação', 'etapa inicial';
+  p := public.ui_set_piece_status(v_piece, 'revisao');
+  p := public.ui_set_piece_status(v_piece, 'aguardando', 'Confirmar com o cliente antes de protocolar');
+  assert p.status = 'aguardando' and p.alerta = 'Confirmar com o cliente antes de protocolar', 'aguardando com alerta';
+  assert p.stage_changed_at >= now() - interval '1 minute', 'carimbo da etapa';
+  assert (select count(*) from public.case_events where type = 'piece_status_changed' and actor = 'humano'
+          and actor_user_id = '22222222-2222-2222-2222-222222222222' and payload->>'to_title' = 'Aguardando') = 1, 'evento da etapa com autor humano';
+  assert (select count(*) from public.case_events where type = 'piece_alert' and payload->>'alerta' like 'Confirmar%') = 1, 'evento do alerta';
+  p := public.ui_set_piece_status(v_piece, 'saneamento', '');
+  assert p.alerta is null, 'alerta limpo com string vazia';
+  p := public.ui_set_piece_status(v_piece, 'protocolada', null, 'ATSum 0001-2026');
+  assert p.protocolado_em is not null and p.protocolo = 'ATSum 0001-2026' and p.reviewed_by = '22222222-2222-2222-2222-222222222222', 'protocolada';
+  assert (select etapa_ordem from public.v_legal_cards where piece_id = v_piece) = 6, 'última etapa';
+  assert (select count(*) from public.piece_stages()) = 6, '6 etapas';
+  assert (select count(*) from public.v_tasks where office_id = b) >= 1, 'Bruno vê a agenda do B';
+  -- privilégios: anon não executa nada; authenticated executa o que é da UI
+  assert has_function_privilege('authenticated', 'public.lead_dossier(uuid)', 'execute'), 'authenticated executa lead_dossier';
+  assert not has_function_privilege('anon', 'public.lead_dossier(uuid)', 'execute'), 'anon não executa lead_dossier';
+  assert not has_function_privilege('anon', 'public.search_cases(uuid,text,int)', 'execute'), 'anon não executa search_cases';
+  assert not has_function_privilege('authenticated', 'public.apply_office_rls(text,text[])', 'execute'), 'helper de migration não é da UI';
+end $$;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';   -- Ana, advogado do A
+do $$ begin
+  assert (select count(*) from public.v_legal_cards where office_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb') = 0, 'Ana não vê a esteira do B';
+  assert (select count(*) from public.v_tasks where office_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb') = 0, 'Ana não vê a agenda do B';
+end $$;
+reset role; reset request.jwt.claim.sub;
+
 rollback;
 \echo SMOKE OK

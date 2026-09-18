@@ -6,7 +6,7 @@
 -- assinados espalhados pelos dias, UFs variadas e alguns encerrados.
 -- Tudo marcado com wa_id começando em '5500' para poder apagar depois.
 --
--- Rodar no SQL Editor depois de 001..009. Pode rodar mais de uma vez (apaga
+-- Rodar no SQL Editor depois de 001..010. Pode rodar mais de uma vez (apaga
 -- e recria o demo). Para remover: rode só o bloco "LIMPEZA".
 -- =============================================================================
 
@@ -30,6 +30,7 @@ declare
   v_nome text;
   v_salario numeric;
   v_fase public.case_phase;
+  v_etapa text; v_hora time; v_task_dia date;
   v_ufs text[] := array['SP','SP','SP','SP','SP','RJ','RJ','BA','BA','PR','PR','ES','MG','PE','RS'];
   v_nomes text[] := array['Ana','Bruno','Carla','Diego','Elaine','Fábio','Gisele','Henrique','Isabela','João','Karina','Leandro','Marina','Nelson','Olívia','Paulo','Renata','Sérgio','Tatiane','Vinícius'];
   v_sobren text[] := array['Silva','Souza','Oliveira','Santos','Pereira','Lima','Costa','Ferreira','Almeida','Rocha'];
@@ -102,15 +103,41 @@ begin
       end if;
     end if;
 
-    -- peça para parte dos contratados; metade protocolada
-    if exists (select 1 from public.contracts where lead_id = v_lead and status = 'assinado') and random() < 0.6 then
-      insert into public.pieces (office_id, lead_id, tese, content, status, generated_by_actor)
-      values (v_office, v_lead, 'verbas_rescisorias', 'Minuta gerada (demo)', 'rascunho', 'ia');
-      if random() < 0.5 then
+    -- peça para parte dos contratados, espalhada pela esteira jurídica (Revisão é a maior)
+    if exists (select 1 from public.contracts where lead_id = v_lead and status = 'assinado') and random() < 0.9 then
+      insert into public.pieces (office_id, lead_id, tese, content, status, generated_by_actor, responsavel)
+      values (v_office, v_lead, (array['verbas_rescisorias','horas_extras','rescisao_indireta','vinculo_empregaticio'])[1 + (random()*3)::int],
+              'Minuta gerada (demo)', 'rascunho', 'ia', v_member);
+      v_etapa := (array['revisao','revisao','revisao','revisao','revisao','revisao','aguardando','aguardando','saneamento','aprovada','protocolada','protocolada','protocolada'])[1 + (i % 13)];
+      if v_etapa = 'protocolada' then
         update public.pieces set status = 'protocolada', protocolo = 'ATSum ' || (1000 + i)::text || '-2026',
                protocolado_em = v_dia + interval '2 days' + time '11:00'
          where lead_id = v_lead;
+      else
+        update public.pieces set status = v_etapa where lead_id = v_lead;
       end if;
+      update public.pieces set stage_changed_at = now() - (random() * interval '20 days'),
+             alerta = case when random() < 0.15 then (array['Confirmar com o cliente antes de protocolar','Aguardando CTPS digital do cliente','Revisor pediu prova do PIX'])[1 + (random()*2)::int] else null end
+       where lead_id = v_lead;
+    end if;
+
+    -- agenda: retornos combinados (a maioria marcada pela IA), alguns realizados, alguns atrasados
+    if i % 3 = 0 then
+      v_hora := time '08:30' + ((i / 3) % 10) * interval '1 hour';                      -- 08:30 .. 17:30
+      v_task_dia := (array[current_date, current_date, current_date, current_date + 1, current_date - 1])[1 + ((i / 3) % 5)];
+      insert into public.tasks (office_id, lead_id, title, description, due_at, assigned_to, created_by_actor, done_at)
+      values (v_office, v_lead,
+              (array['Retorno combinado','Retomar atendimento','Acompanhar assinatura','Receber documentos'])[1 + (random()*3)::int],
+              (array['Retorno combinado para receber documentos e CPF do cliente e gerar o contrato.',
+                     'Cliente sinalizou que já estava tarde. Retomar às 09:00. Faltam ~3 perguntas da varredura de teses + resumo final para confirmação.',
+                     'Cliente trocou de celular e precisa instalar o WhatsApp no novo. Documentos pendentes: RG/CNH, comprovante de residência, CTPS digital.',
+                     'Retorno combinado para acompanhar a assinatura do contrato após o almoço, conforme pedido pelo cliente.',
+                     'Cliente está no plantão e não pode continuar agora. Retomar com o argumento de que precisa estar protegido antes da resposta da empresa.',
+                     'Cliente vai procurar mais comprovantes de PIX de outros meses. Pendente: comprovante de endereço e CTPS digital.'])[1 + (random()*5)::int],
+              (v_task_dia + v_hora) at time zone 'America/Sao_Paulo', v_member, 'ia',
+              -- realizados: os de ontem (menos um em cada três, que fica atrasado) e os de hoje antes das 14h
+              case when (v_task_dia < current_date and (i / 3) % 3 <> 0) or (v_task_dia = current_date and v_hora < time '14:00')
+                   then (v_task_dia + v_hora) at time zone 'America/Sao_Paulo' + interval '15 minutes' else null end);
     end if;
 
     -- intervenções: ~35% dos leads; a maioria resolvida com desfecho e responsável

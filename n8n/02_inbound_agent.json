@@ -178,7 +178,7 @@
         "promptType": "define",
         "text": "={{ JSON.stringify($json.context) }}\n\nÚltima mensagem do lead: {{ $('Extrair itens').item.json.body }}",
         "options": {
-          "systemMessage": "={{ $json.agent.system_prompt }}\n\n## Dossiê do caso (JSON)\n{{ JSON.stringify({ lead: $json.dossier.lead, case_data: $json.dossier.case_data, qualification: $json.dossier.qualification, evidences: $json.dossier.evidences, params: $json.dossier.params }) }}\n\n## Formato de saída (obrigatório)\nResponda SOMENTE com JSON:\n{\"reply\": \"texto para o WhatsApp\", \"advance_to\": null | \"triagem\"|\"qualificacao\"|\"provas\"|\"calculo\"|\"contrato\"|\"briefing\"|\"peca\", \"advance_reason\": string|null, \"intervention\": null | {\"category\": \"duvida_juridica\"|\"fora_de_escopo\"|\"cliente_insatisfeito\"|\"pedido_de_humano\"|\"erro_ia\"|\"outro\", \"reason\": string, \"priority\": 1|2|3}, \"case_data\": null | {campos de public.case_data a atualizar}}"
+          "systemMessage": "={{ $json.agent.system_prompt }}\n\n## Dossiê do caso (JSON)\n{{ JSON.stringify({ lead: $json.dossier.lead, case_data: $json.dossier.case_data, qualification: $json.dossier.qualification, evidences: $json.dossier.evidences, params: $json.dossier.params }) }}\n\n## Formato de saída (obrigatório)\nResponda SOMENTE com JSON:\n{\"reply\": \"texto para o WhatsApp\", \"advance_to\": null | \"triagem\"|\"qualificacao\"|\"provas\"|\"calculo\"|\"contrato\"|\"briefing\"|\"peca\", \"advance_reason\": string|null, \"intervention\": null | {\"category\": \"duvida_juridica\"|\"fora_de_escopo\"|\"cliente_insatisfeito\"|\"pedido_de_humano\"|\"erro_ia\"|\"outro\", \"reason\": string, \"priority\": 1|2|3}, \"case_data\": null | {campos de public.case_data a atualizar}, \"task\": null | {\"title\": string, \"description\": string, \"due_at\": \"data-hora ISO 8601 com fuso, quando o lead combinar um retorno\"}}"
         }
       },
       "id": "b2000000-0000-4000-8000-000000000008",
@@ -215,7 +215,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Normaliza a saída do agente e monta ai_meta (custo derivado, nunca digitado).\nconst ctx = $('Agente da fase + contexto + dossiê').item.json;\nconst raw = $json.output ?? $json.text ?? '';\nlet parsed;\ntry { parsed = JSON.parse(raw.replace(/^```(json)?/,'').replace(/```$/,'').trim()); } catch { parsed = { reply: String(raw) }; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null;\nconst tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: {\n  ...ctx,\n  reply: parsed.reply ?? '',\n  advance_to: parsed.advance_to ?? null,\n  advance_reason: parsed.advance_reason ?? null,\n  intervention: parsed.intervention ?? null,\n  case_data: parsed.case_data ?? null,\n  ai_meta: { agent_role: ctx.agent.role, model: ctx.agent.model, tokens_in, tokens_out, cost_usd }\n}}];"
+        "jsCode": "// Normaliza a saída do agente e monta ai_meta (custo derivado, nunca digitado).\nconst ctx = $('Agente da fase + contexto + dossiê').item.json;\nconst raw = $json.output ?? $json.text ?? '';\nlet parsed;\ntry { parsed = JSON.parse(raw.replace(/^```(json)?/,'').replace(/```$/,'').trim()); } catch { parsed = { reply: String(raw) }; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null;\nconst tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: {\n  ...ctx,\n  reply: parsed.reply ?? '',\n  advance_to: parsed.advance_to ?? null,\n  advance_reason: parsed.advance_reason ?? null,\n  intervention: parsed.intervention ?? null,\n  case_data: parsed.case_data ?? null,\n  task: parsed.task ?? null,\n  ai_meta: { agent_role: ctx.agent.role, model: ctx.agent.model, tokens_in, tokens_out, cost_usd }\n}}];"
       },
       "id": "b2000000-0000-4000-8000-000000000010",
       "name": "Interpretar resposta",
@@ -229,9 +229,9 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "select public.apply_agent_effects($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb) as effects;",
+        "query": "select public.apply_agent_effects($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb) as effects;",
         "options": {
-          "queryReplacement": "={{ $json.lead_id }}, {{ $json.conversation_id }}, {{ $json.agent.role }}, {{ JSON.stringify($json.case_data) }}, {{ $json.advance_to }}, {{ $json.advance_reason }}, {{ JSON.stringify($json.intervention) }}"
+          "queryReplacement": "={{ $json.lead_id }}, {{ $json.conversation_id }}, {{ $json.agent.role }}, {{ JSON.stringify($json.case_data) }}, {{ $json.advance_to }}, {{ $json.advance_reason }}, {{ JSON.stringify($json.intervention) }}, {{ JSON.stringify($json.task) }}"
         }
       },
       "id": "b2000000-0000-4000-8000-000000000011",

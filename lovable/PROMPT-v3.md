@@ -293,6 +293,9 @@ done_at, assigned_to, lead_id, created_by_actor`). Mudar `contracts.status` disp
 banco (evento com autor; assinar avança a fase). Só `admin` e `advogado` escrevem em `contracts`
 e `pieces`.
 
+**Atenção.** O Prompt 9 substitui esta página por um quadro único de peças e uma agenda por dia,
+igual ao concorrente. Se o 9 já rodou, ignore este prompt.
+
 **Faça.**
 1. `/juridico` com duas abas:
    - **Contratos**: kanban por status (Rascunho, Enviado, Assinado, Recusado/Cancelado) com cards
@@ -466,3 +469,56 @@ R$ 120 e os cards do topo sobem na hora. O rodapé de um caso criado hoje mostra
 R$ 100 entre os leads de hoje. Remover a linha volta os cards. `select * from
 public.marketing_import_targets()` no SQL Editor (como service_role) lista a Meta Ads depois de
 salvar o token e ativar em Integrações.
+
+---
+
+## Prompt 9 — Jurídico como esteira e Agendamentos por dia (igual ao concorrente)
+
+**Pré-requisito.** `supabase/010_juridico_agenda.sql` aplicada e tipos regenerados. Ela cria:
+`v_legal_cards` (um card por peça: `piece_id, lead_id, status, etapa, etapa_ordem, tese, alerta,
+protocolo, responsavel, assigned_to, stage_changed_at, horas_na_etapa, contact_name,
+contact_phone, empresa, cargo, valor_causa, faixa, viavel, fragil, em_atendimento,
+intervencao_pendente, prescricao_em`), `piece_stages()` (6 etapas na ordem: Em redação, Revisão,
+Aguardando, Saneamento, Pronto p/ protocolo, Protocolado), `ui_set_piece_status(p_piece,
+p_status, p_alerta, p_protocolo)`, `v_tasks` (tarefa + `contact_name, contact_phone, assigned_name,
+situacao pendente|atrasado|realizado, dia`). `pieces` e `tasks` já estão no Realtime.
+
+**Faça.**
+1. **`/juridico` vira um quadro só**, sem abas. Barra do topo: busca (nome, telefone, empresa),
+   filtro por responsável como avatares clicáveis (iniciais dos membros, `responsavel` ou
+   `assigned_to`; "Todos" selecionado por padrão; mostrar os 6 primeiros e "+N"), botão Filtros
+   (faixa, viável/frágil, em atendimento, tese). Colunas com rolagem horizontal, uma por etapa de
+   `piece_stages()`, cabeçalho colorido com o título e o contador. Cores dos cabeçalhos: Em
+   redação cinza, Revisão terracota, Aguardando âmbar, Saneamento roxo-acinzentado, Pronto p/
+   protocolo verde, Protocolado verde-azulado (tons suaves, texto escuro). Card: nome em negrito,
+   "há X horas/dias" à direita (`horas_na_etapa`), telefone em cinza, "empresa · cargo", "Valor da
+   causa: R$ X" com o valor em negrito, chips: faixa como `LOW TICKET` / `MID TICKET` / `HIGH
+   TICKET` (baixo/medio/alto), `Viável` (verde) ou `Frágil` (âmbar), `Em atendimento` quando
+   `em_atendimento`. Se `alerta` não for nulo, uma faixa amarela no topo do card com ícone de
+   aviso e o texto. Clicar no card abre o modal do caso (`?caso=`). Arrastar entre colunas chama
+   `ui_set_piece_status(piece_id, status)`; soltar em Protocolado pede o número do protocolo;
+   soltar em Aguardando ou Saneamento pergunta (opcional) o alerta. Menu "…" no card: editar
+   alerta, limpar alerta (`p_alerta = ''`), trocar responsável (`update pieces set responsavel`).
+   Contratos saem desta página: a lista de contratos fica dentro do modal do caso (aba Dados,
+   card "Contrato" com status, honorários, valor e datas). "Novo contrato" também vai para lá.
+2. **`/agendamentos` vira uma agenda por dia**, sem grade semanal. Barra: busca por lead, seletor
+   de data com botão "Hoje" (setas para o dia anterior/seguinte), select "Ativos e realizados |
+   Só ativos | Só realizados", botão Atualizar. Título do grupo: "HOJE · QUINTA-FEIRA, 17 DE
+   SETEMBRO" com o contador em chip; para outros dias, "AMANHÃ · …" ou a data por extenso.
+   Cada item: hora à esquerda em negrito, nome do lead, `description` em cinza (o combinado),
+   chip à direita: `REALIZADO` (cinza), `ATRASADO` (vermelho) ou `PENDENTE` (verde). Clicar no
+   nome abre o modal do caso; um botão de check marca `done_at = now()`. "Nova tarefa" continua
+   (título, descrição, data/hora, responsável, lead por busca). Dados de `v_tasks` filtrados por
+   `dia`; Realtime em `tasks` atualiza a lista. Contador do menu = tarefas de hoje não realizadas.
+3. Menu: ao lado de Jurídico, contador de cards em Revisão + Saneamento (o que exige advogado).
+
+**Não faça.** Não recrie o kanban de contratos. Não calcule "Viável/Frágil" no front: vem da
+view. Não mude `pieces.status` direto por `update`; use `ui_set_piece_status` (o banco grava o
+evento com o autor).
+
+**Critério de aceite.** Com o seed, o quadro mostra a coluna Revisão como a maior, alguns cards
+com faixa amarela de alerta e Protocolado com números de protocolo. Arrastar um card de Revisão
+para Aguardando e escrever um alerta faz o card mostrar a faixa amarela e o Histórico do caso
+ganhar "moveu a peça de Revisão para Aguardando" com o seu nome. Em Agendamentos, hoje mostra os
+retornos do seed com os realizados em cinza e os atrasados em vermelho; marcar um como feito muda
+o chip sem recarregar.
