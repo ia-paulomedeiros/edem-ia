@@ -1,0 +1,123 @@
+{
+  "name": "FU 06 — Régua de follow-up (reativação automática)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "c6000000-0000-4000-8000-000000000001",
+      "name": "A cada 30 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from public.followup_due(200);",
+        "options": {}
+      },
+      "id": "c6000000-0000-4000-8000-000000000002",
+      "name": "Leads com follow-up vencido",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Renderiza o passo da régua. Nome: só o primeiro nome.\nreturn $input.all().map(it => {\n  const j = it.json; const nome = String(j.nome || '').trim().split(' ')[0] || 'olá';\n  const body = String(j.template || '').replace(/\\{\\{nome\\}\\}/g, nome).replace(/\\{\\{escritorio\\}\\}/g, j.escritorio || 'escritório');\n  return { json: { ...j, body } };\n});"
+      },
+      "id": "c6000000-0000-4000-8000-000000000003",
+      "name": "Renderizar mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with m as (\n  insert into public.messages (office_id, conversation_id, direction, sender, body, status, ai_meta)\n  values ($1::uuid, $2::uuid, 'out', 'sistema', $3, 'pending', jsonb_build_object('agent_role', 'followup', 'step', $4::int))\n  returning id\n)\nselect m.id as message_id, public.followup_mark_sent($5::uuid) as regua from m;",
+        "options": {
+          "queryReplacement": "={{ $json.office_id }}, {{ $json.conversation_id }}, {{ $json.body }}, {{ $json.step }}, {{ $json.lead_id }}"
+        }
+      },
+      "id": "c6000000-0000-4000-8000-000000000004",
+      "name": "Gravar mensagem + avançar a régua",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        720,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 30 min": {
+      "main": [
+        [
+          {
+            "node": "Leads com follow-up vencido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leads com follow-up vencido": {
+      "main": [
+        [
+          {
+            "node": "Renderizar mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Renderizar mensagem": {
+      "main": [
+        [
+          {
+            "node": "Gravar mensagem + avançar a régua",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "notes": "A cada 30 min lê followup_due(): leads que a IA respondeu e ficaram calados, não pausados, não assumidos pela equipe, sem intervenção aberta, com o próximo passo vencido. Para cada um grava uma mensagem do sistema (o WA 03 envia; não pausa a IA) e chama followup_mark_sent(): agenda o próximo passo pela regra do escritório (followup_rules: office_id nulo = padrão global de 3 passos: 4h, 24h, 72h) ou, no fim, abre a intervenção 'follow-up esgotado'. Qualquer resposta do lead zera a régua (trigger em messages). Nota: só service_role executa followup_due/followup_mark_sent."
+  }
+}

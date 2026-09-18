@@ -408,5 +408,102 @@ do $$ begin
 end $$;
 reset role; reset request.jwt.claim.sub;
 
+-- ---------- 011: caso completo (encerrar com motivo, pausa, ações, contrato assinado, briefing, régua)
+reset role; reset request.jwt.claim.sub;
+do $$
+declare v_lead uuid; v_conv uuid; r jsonb; k public.contracts; b public.briefings; a uuid := 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'; n int;
+begin
+  -- lead novo do A para não interferir nos anteriores
+  r := public.ingest_inbound('PNID-A', '5511966665555', 'Lead Régua', 'wamid.r1', 'oi, fui demitido');
+  v_lead := (r->>'lead_id')::uuid; v_conv := (r->>'conversation_id')::uuid;
+  assert (select last_inbound_at from public.leads where id = v_lead) is not null, 'última entrada registrada';
+  -- IA responde => régua agendada (passo 1 em 4h)
+  insert into public.messages (office_id, conversation_id, direction, sender, body, status, ai_meta)
+  values (a, v_conv, 'out', 'ia', 'Olá! Me conta o que aconteceu.', 'sent', '{"agent_role":"recepcao"}');
+  assert (select followup_next_at from public.leads where id = v_lead) > now() + interval '3 hours', 'follow-up agendado após resposta da IA';
+  assert (select count(*) from public.followup_due()) = 0, 'ainda não venceu';
+  update public.leads set followup_next_at = now() - interval '1 minute' where id = v_lead;
+  assert (select count(*) from public.followup_due() d where d.lead_id = v_lead) = 1, 'lead calado entra na fila da régua';
+  assert (select template from public.followup_due() d where d.lead_id = v_lead) like '%{{nome}}%', 'template do passo 1';
+  r := public.followup_mark_sent(v_lead);
+  assert (r->>'step')::int = 1 and (r->>'exhausted')::boolean is not true, 'passo 1 enviado, próximo agendado';
+  update public.leads set followup_next_at = now() - interval '1 minute' where id = v_lead;
+  r := public.followup_mark_sent(v_lead);
+  update public.leads set followup_next_at = now() - interval '1 minute' where id = v_lead;
+  r := public.followup_mark_sent(v_lead);
+  assert (r->>'exhausted')::boolean, 'régua esgotada no 3º passo';
+  assert (select count(*) from public.human_interventions where lead_id = v_lead and category = 'follow_up_esgotado' and status = 'pendente') = 1, 'esgotou => fila';
+  assert (select followup_next_at from public.leads where id = v_lead) is null, 'sem próximo passo';
+  -- lead respondeu => régua zera
+  perform public.ingest_inbound('PNID-A', '5511966665555', 'Lead Régua', 'wamid.r2', 'desculpa a demora');
+  assert (select followup_step from public.leads where id = v_lead) = 0, 'resposta do lead zera a régua';
+
+  -- agente: contrato + briefing + dados novos
+  r := public.apply_agent_effects(v_lead, v_conv, 'contrato',
+         '{"cpf":"123.456.789-00","email":"lead@x.test","empresa_cnpj":"12.345.678/0001-00","tem_caso":true}'::jsonb,
+         null, null, null, null, '{"action":"send","honorarios_percent":35}'::jsonb,
+         '{"teses":["horas_extras","desvio_funcao"],"dados_vinculo":{"jornada":"44h"},"conteudo":"- **Dados pessoais**\n- Nome: Lead Régua","status":"em_andamento"}'::jsonb);
+  assert r ? 'contract_id' and r ? 'briefing_id', 'agente pediu contrato e abriu briefing';
+  select * into k from public.contracts where id = (r->>'contract_id')::uuid;
+  assert k.status = 'enviado' and k.honorarios_percent = 35 and k.requested_by_actor = 'ia' and k.send_requested_at is not null, 'contrato aguardando o provedor';
+  assert (select phase from public.leads where id = v_lead) = 'contrato', 'pedir contrato leva à fase contrato';
+  assert (select cpf from public.contacts where id = (select contact_id from public.leads where id = v_lead)) = '123.456.789-00', 'CPF gravado pelo agente';
+  assert (public.contract_fill_data(v_lead)->>'cliente_cpf') = '123.456.789-00' and (public.contract_fill_data(v_lead)->>'honorarios_percent') = '35', 'dados do contrato';
+  assert public.contract_fill_data(v_lead)->>'template_html' like '%{{cliente_nome}}%', 'modelo global do contrato';
+  -- n8n: enviado ao provedor, depois assinado => briefing
+  perform public.contract_mark_sent(k.id, 'autentique', 'doc-ref-1', 'https://assina.ae/abc', 'aaaa/contrato.pdf');
+  assert (select sign_url from public.contracts where id = k.id) = 'https://assina.ae/abc', 'link de assinatura';
+  select * into k from public.contract_mark_signed('doc-ref-1', 'https://api.autentique.com.br/x/assinado.pdf');
+  assert k.status = 'assinado' and k.pdf_url like '%assinado.pdf', 'assinado pelo webhook';
+  assert (select phase from public.leads where id = v_lead) = 'briefing', 'assinado => briefing';
+  assert (select count(*) from public.case_events where lead_id = v_lead and type = 'contract_signed') = 1, 'evento de assinatura';
+  select * into b from public.briefings where lead_id = v_lead;
+  assert b.teses = array['horas_extras','desvio_funcao'] and b.dados_vinculo->>'jornada' = '44h' and b.agent_role = 'contrato', 'briefing estruturado';
+  assert (select count(*) from public.case_events where lead_id = v_lead and type = 'briefing_updated' and actor = 'ia') = 1, 'evento do briefing';
+  assert public.lead_dossier(v_lead)->'agent'->>'role' = 'briefing', 'dossiê diz quem conduz';
+  assert jsonb_array_length(public.lead_dossier(v_lead)->'contracts') = 1, 'dossiê traz contratos';
+end $$;
+
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';   -- Ana, advogado do A
+do $$
+declare v_lead uuid; v_int uuid; act public.intervention_actions; l public.leads; b public.briefings;
+begin
+  select id into v_lead from public.leads where office_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and phase = 'briefing';
+  select id into v_int from public.human_interventions where lead_id = v_lead and category = 'follow_up_esgotado';
+  -- ações da intervenção
+  act := public.log_intervention_action(v_int, 'ligacao', 'atendeu_retorno', 'Cliente pediu para ligar amanhã depois do almoço.', now() + interval '1 day');
+  assert act.tipo = 'ligacao' and act.retorno_em is not null, 'ação registrada';
+  assert (select calls_count from public.human_interventions where id = v_int) = 1, 'ligação contada';
+  assert (select status from public.human_interventions where id = v_int) = 'em_atendimento', 'registrar ação assume a intervenção';
+  assert (select count(*) from public.tasks where lead_id = v_lead and title = 'Retorno combinado' and created_by_actor = 'humano') = 1, 'retorno vira tarefa';
+  assert (select count(*) from public.case_events where lead_id = v_lead and type = 'intervention_action' and actor = 'humano' and payload->>'resultado_titulo' like 'Atendeu%') = 1, 'evento da ação com título';
+  begin
+    perform public.log_intervention_action(v_int, 'nota', 'nota', 'curta');
+    raise exception 'FALHOU';
+  exception when others then if sqlerrm = 'FALHOU' then raise exception 'nota curta deveria falhar'; end if; end;
+  assert jsonb_array_length(public.lead_dossier(v_lead)->'actions') = 1, 'dossiê traz as ações';
+  -- pausa, papéis, briefing pela UI, encerrar com motivo
+  l := public.ui_pause_lead(v_lead, true, now() + interval '2 days');
+  assert l.paused and l.retorno_em is not null and l.followup_next_at is null, 'pausado com retorno';
+  l := public.ui_pause_lead(v_lead, false);
+  assert not l.paused, 'retomado';
+  l := public.ui_set_lead_roles(v_lead, null, '11111111-1111-1111-1111-111111111111', null);
+  assert l.supervisor = '11111111-1111-1111-1111-111111111111', 'supervisor';
+  b := public.ui_upsert_briefing(v_lead, '{"alertas":"Consignado em folha","status":"concluido"}'::jsonb);
+  assert b.status = 'concluido' and b.completed_at is not null and b.alertas = 'Consignado em folha' and b.teses = array['horas_extras','desvio_funcao'], 'briefing concluído sem perder as teses';
+  assert (select count(*) from public.case_events where lead_id = v_lead and type = 'briefing_completed' and actor = 'humano') = 1, 'evento de conclusão com autor';
+  l := public.ui_close_lead(v_lead, 'Sem resposta / não atende mais');
+  assert l.phase = 'encerrado' and l.closed_by = 'equipe' and l.closed_reason = 'Sem resposta / não atende mais', 'encerrado com motivo e autor';
+  l := public.ui_reopen_lead(v_lead, 'briefing');
+  assert l.phase = 'briefing' and l.closed_reason is null, 'reaberto';
+  -- n8n-only
+  assert not has_function_privilege('authenticated', 'public.followup_due(int)', 'execute'), 'followup_due bloqueada';
+  assert not has_function_privilege('authenticated', 'public.contract_mark_signed(text,text,timestamptz)', 'execute'), 'contract_mark_signed bloqueada';
+  assert (select count(*) from public.followup_rules) = 3, 'regras globais visíveis';
+  assert (select count(*) from public.contract_templates) = 1, 'modelo global visível';
+end $$;
+reset role; reset request.jwt.claim.sub;
+
 rollback;
 \echo SMOKE OK

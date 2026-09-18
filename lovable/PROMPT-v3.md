@@ -562,3 +562,96 @@ priority`), `v_tasks` (`situacao, contact_name, title, due_at`).
 **Critério de aceite.** Com o seed, Clientes mostra 33 clientes com etapas variadas (não só
 "Briefing"), responsável preenchido e "há N dias". O sino lista títulos legíveis com o nome do
 lead e uma seção de prescrição.
+
+---
+
+## Prompt 11 — O caso completo (modal igual ao do concorrente)
+
+**Pré-requisito.** `supabase/011_caso_completo.sql` aplicada e tipos regenerados. `lead_dossier()`
+agora traz também `agent` (quem conduz: `role, name`), `roles` (responsável, supervisor,
+protocolador com nomes), `contracts` (todos), `actions` (ações da intervenção com
+`resultado_titulo` e `created_by_name`), e `lead` com `closed_reason, paused, paused_at, retorno_em,
+drive_folder_url, notas_internas, last_inbound_at, last_outbound_at, followup_step,
+followup_next_at`. `contact` ganhou `cpf, email, nascimento, estado_civil, nacionalidade, endereco,
+cep`; `case_data` ganhou `empresa_cnpj, motivo_saida, acidente_trabalho, tem_caso,
+objecao_principal, objecao_detalhe`; `briefing` ganhou as seções (`dados_pessoais, dados_vinculo,
+verbas, timeline, inconsistencias, gaps, teses, fatos, alertas, testemunhas, conteudo, agent_role`).
+RPCs novas: `ui_close_lead(p_lead, p_reason)`, `ui_reopen_lead(p_lead, p_to)`,
+`ui_pause_lead(p_lead, p_paused, p_retorno)`, `ui_set_lead_roles(p_lead, p_assigned,
+p_supervisor, p_protocolador)`, `intervention_results()` (catálogo de resultados),
+`log_intervention_action(p_intervention, p_tipo, p_resultado, p_notas, p_retorno_em)`,
+`ui_request_contract(p_lead, p_honorarios)`, `ui_confirm_contract_data(p_contract, p_confirmed)`,
+`ui_manual_signature(p_contract, p_document_path)`, `contract_fill_data(p_lead)` (prévia),
+`ui_upsert_briefing(p_lead, p_data)`. Realtime em `contracts`, `briefings`, `intervention_actions`.
+
+**Faça.** Refaça o modal do caso com este layout:
+
+1. **Cabeçalho.** Nome em negrito; abaixo "telefone · CPF"; chip "Conduzido por: {agent.name}"
+   (o agente de IA da fase) ou "Equipe: {nome}" quando a conversa está assumida. À direita os
+   botões: **Encerrar** (vermelho claro; diálogo com motivo obrigatório em select + texto livre:
+   "Sem resposta / não atende mais", "Fora do escopo", "Já tem advogado", "Prescrito",
+   "Desistiu", "Outro"; chama `ui_close_lead`), **pausa** (ícone ⏸/▶; diálogo com data de retorno
+   opcional; `ui_pause_lead`), **Pegar** (claim da intervenção pendente do lead, se houver; senão
+   Assumir conversa), **Drive** (abre `drive_folder_url` em nova aba; desabilitado sem URL),
+   **Arquivo** (vai para a aba Documentos), fechar.
+   Faixa de status quando `phase = encerrado`: fundo rosa claro, "ENCERRADO · {closed_reason} ·
+   encerrado por {nome ou IA} · {Contrato fechado se houver assinado}" com botão "Reabrir"
+   (`ui_reopen_lead`). Quando `paused`: faixa âmbar "PAUSADO até {retorno_em}".
+   Faixa de resumo em cinco colunas: EMPRESA, CARGO, SALÁRIO, PERÍODO (admissão–demissão ou
+   "—"), PRESCRIÇÃO (data + "em N dias", vermelho se vencida).
+2. **Abas, nesta ordem:** Histórico, Conversa, Dados, Qualificação, Briefing, Contrato, Petição,
+   Documentos, Atualizações, Tarefa. As já existentes ficam; ajustes:
+   - **Histórico**: intercalar os marcadores de fase e de contrato como no concorrente ("Mudança
+     de fase: Triagem → Qualificação"), com o filtro "Histórico de tarefas" mostrando só
+     `intervention_*`, `task_*` e `intervention_action`.
+   - **Conversa**: entre as mensagens, mostrar marcadores centralizados dos eventos de fase
+     ("INICIOU QUALIFICAÇÃO · 17/09 15:51") e das mensagens `sender = sistema` com um rótulo
+     ("Sistema · contrato" ou "Sistema · follow-up passo 2", vindo de `ai_meta.kind/step`).
+   - **Dados**: quatro blocos recolhíveis com contador de campos: **Identificação** (nome,
+     telefone, CPF, e-mail, nascimento, estado civil, nacionalidade, endereço, cidade, UF, CEP),
+     **Caso jurídico** (empresa, CNPJ, cargo, salário, admissão, demissão, motivo da saída, tipo
+     de rescisão, meses trabalhados, acidente de trabalho, CTPS assinada, tem caso, objeção
+     principal, objeção detalhe, prescrição, valor estimado), **Atribuição & status** (fase atual,
+     fase anterior via último `phase_changed`, responsável, supervisor, protocolador com select de
+     membros e `ui_set_lead_roles`, humano assumiu SIM/NÃO e quando, lead pausado, data de
+     retorno, ID e URL da pasta do Drive, notas internas editáveis), **Sistema** (agente condutor,
+     última mudança de fase, última entrada, última saída, criado em, atualizado em). Booleans
+     como chips SIM (verde) / NÃO (vermelho). Editar salva em `contacts`/`case_data`/`leads`.
+   - **Briefing**: cabeçalho "Briefing" com o status ("Em andamento"/"Concluído", data) e botão
+     **Baixar DOCX** (gerar no front com a lib `docx` a partir de `conteudo`, sem novo backend).
+     Lista de campos: Agente autor, Status, Dados pessoais, Dados de vínculo, Verbas, Timeline,
+     Inconsistências, Gaps, Teses identificadas (chips), Fatos aprofundados, Alertas (faixa
+     amarela quando houver), Testemunhas, e **Conteúdo completo** renderizado como markdown.
+     Botão "Editar" abre os campos de texto e salva com `ui_upsert_briefing`; "Concluir briefing"
+     manda `{status:'concluido'}`.
+   - **Contrato**: cabeçalho "Contrato" + botão **Enviar contrato** (ou **Regerar contrato** se já
+     houver um) → `ui_request_contract` com honorários pré-preenchidos de `office_params`. Card do
+     contrato ativo com: status (chip), link de assinatura (`sign_url`), PDF assinado (`pdf_url`),
+     Dados confirmados (toggle → `ui_confirm_contract_data`), criado em, enviado em, assinatura
+     (data), atualizado em, assinatura manual (SIM/NÃO) e botão "Anexar assinado em papel"
+     (upload em `provas/<office>/<lead>/contrato-assinado.pdf` e `ui_manual_signature`). Antes de
+     enviar, "Prévia" mostra `contract_fill_data` renderizado no `template_html`. Quando
+     `provider_payload.error` existir, mostrar a falha em vermelho.
+   - **Petição**: a peça atual (de `pieces`) com etapa, alerta, protocolo e conteúdo; botões
+     **Devolver para saneamento** (`ui_set_piece_status(..., 'saneamento', alerta)`) e
+     **Cadastrar peça manual** (insere `pieces` com `generated_by_actor = humano`).
+   - **Documentos**: a aba Provas atual, renomeada, mais os arquivos do contrato e da peça.
+   - **Atualizações**: "Documentos recebidos durante saneamento": `evidences` criadas depois da
+     última entrada da peça em `saneamento`; vazio com texto "Nenhuma atualização registrada".
+   - **Tarefa**: a intervenção pendente/em atendimento do lead (a mais recente): "Sobre a tarefa"
+     (título), "Instruções para solucionar" (faixa amarela com `note`), "Histórico de ações"
+     (lista de `actions`: tipo, resultado, notas, quem, quando), **Registrar ação** (tipo em três
+     botões Ligação/Mensagem/Nota; select Resultado de `intervention_results()` filtrado por
+     tipo; Notas com contador "0/20" e botão desabilitado abaixo de 20; campo opcional "Retorno
+     em" com data/hora) → `log_intervention_action`; botão **Concluir tarefa** →
+     `resolve_intervention` com desfecho. Sem intervenção: "Nenhuma tarefa aberta para este caso".
+3. **Fila (`/fila`)**: clicar num card abre este modal já na aba Tarefa.
+
+**Não faça.** Não grave motivo de encerramento, pausa ou papéis com `update` direto: use as RPCs
+(elas gravam o evento com o autor). Não calcule prescrição, valor ou "fase anterior" no front.
+
+**Critério de aceite.** Abrir um caso da fila mostra o cabeçalho com "Conduzido por", a faixa de
+resumo e a aba Tarefa com o registro de ação; registrar uma ligação com resultado "Atendeu — quer
+fechar" e 25 caracteres de nota aparece no Histórico de ações e no Histórico do caso com o seu
+nome, e o contador de ligações da fila sobe. "Enviar contrato" muda a fase para Contrato e o card
+mostra "enviado"; encerrar com motivo mostra a faixa rosa com o texto e o seu nome.

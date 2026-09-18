@@ -6,7 +6,7 @@
 -- assinados espalhados pelos dias, UFs variadas e alguns encerrados.
 -- Tudo marcado com wa_id começando em '5500' para poder apagar depois.
 --
--- Rodar no SQL Editor depois de 001..010. Pode rodar mais de uma vez (apaga
+-- Rodar no SQL Editor depois de 001..011. Pode rodar mais de uma vez (apaga
 -- e recria o demo). Para remover: rode só o bloco "LIMPEZA".
 -- =============================================================================
 
@@ -50,8 +50,13 @@ begin
     v_nome := v_nomes[1 + (random() * 19)::int] || ' ' || v_sobren[1 + (random() * 9)::int];
     v_salario := 1500 + (random() * 6000)::int;
 
-    insert into public.contacts (office_id, wa_id, name, uf)
-    values (v_office, '5500' || lpad(i::text, 9, '0'), v_nome, v_uf) returning id into v_contact;
+    insert into public.contacts (office_id, wa_id, name, uf, cidade, cpf, email, nascimento, estado_civil, nacionalidade, endereco, cep)
+    values (v_office, '5500' || lpad(i::text, 9, '0'), v_nome, v_uf,
+            (array['São Paulo','Campinas','Rio de Janeiro','Salvador','Curitiba','Belo Horizonte'])[1 + (i % 6)],
+            lpad((100000000 + i * 7919)::text, 9, '0') || '-' || lpad((i * 13 % 100)::text, 2, '0'),
+            lower(replace(v_nome, ' ', '.')) || '@exemplo.com', date '1975-01-01' + (i * 211), (array['Solteiro(a)','Casado(a)','Divorciado(a)'])[1 + (i % 3)],
+            'brasileiro(a)', 'Rua ' || chr(65 + (i % 26)) || ', ' || (100 + i * 3)::text || ', Centro', lpad((10000000 + i * 137)::text, 8, '0'))
+    returning id into v_contact;
 
     insert into public.leads (office_id, contact_id, source, assigned_to, created_at, phase)
     values (v_office, v_contact, 'whatsapp', case when random() < 0.6 then v_member else null end, v_dia + time '09:00' + (random() * interval '10 hours'), 'novo')
@@ -83,14 +88,24 @@ begin
     end if;
 
     -- dados do caso e qualificação
-    insert into public.case_data (lead_id, office_id, empresa, cargo, admissao, demissao, salario, tipo_rescisao, aviso_previo, fgts_depositado, horas_extras_semanais, updated_by_actor)
-    values (v_lead, v_office, 'Empresa ' || chr(65 + (random()*25)::int) || ' Ltda', 'Operador', v_dia - ((365 + random() * 1500)::int), v_dia - ((10 + random() * 300)::int),
+    insert into public.case_data (lead_id, office_id, empresa, cargo, admissao, demissao, salario, tipo_rescisao, aviso_previo, fgts_depositado, horas_extras_semanais, updated_by_actor,
+                                  empresa_cnpj, motivo_saida, acidente_trabalho, tem_caso, objecao_principal)
+    values (v_lead, v_office, 'Empresa ' || chr(65 + (random()*25)::int) || ' Ltda', (array['Operador','Auxiliar de limpeza','Recepcionista','Motorista','Vendedor(a)'])[1 + (i % 5)],
+            v_dia - ((365 + random() * 1500)::int), v_dia - ((10 + random() * 300)::int),
             v_salario, (array['sem_justa_causa','sem_justa_causa','sem_justa_causa','pedido_demissao','rescisao_indireta'])[1 + (random()*4)::int],
-            'indenizado', random() < 0.7, (random() * 10)::int, 'ia');
+            'indenizado', random() < 0.7, (random() * 10)::int, 'ia',
+            lpad((10000000 + i * 977)::text, 8, '0') || '/0001-' || lpad((i % 90 + 10)::text, 2, '0'),
+            (array['Demissão sem justa causa após reclamar de horas extras','Empresa parou de pagar e pediu para "ficar em casa"','Acúmulo de função sem ajuste de salário','Assédio do supervisor; pediu demissão sob pressão'])[1 + (i % 4)],
+            i % 9 = 0, true, case when i % 7 = 0 then 'Medo de retaliação da empresa' else null end);
     perform public.qualification_gate(v_lead, 'ia');
 
     -- fase: distribui pelo funil; ~40% viram contrato assinado
+    update public.leads set drive_folder_id = 'demo' || i, drive_folder_url = 'https://drive.google.com/drive/folders/demo' || i,
+           notas_internas = case when i % 8 = 0 then 'Cliente prefere contato à tarde.' else null end,
+           paused = i % 15 = 0, paused_at = case when i % 15 = 0 then now() - interval '1 day' end, retorno_em = case when i % 15 = 0 then now() + interval '3 days' end
+     where id = v_lead;
     if random() < 0.12 then
+      update public.leads set closed_reason = (array['Sem resposta / não atende mais','Fora do escopo (não é trabalhista)','Já tem advogado','Prescrito'])[1 + (i % 4)] where id = v_lead;
       perform public.advance_phase(v_lead, 'encerrado', 'ia', null, 'qualificacao', 'fora do escopo');
     else
       v_fase := v_fases[1 + (random() * 6)::int];
@@ -99,7 +114,18 @@ begin
         insert into public.contracts (office_id, lead_id, status, honorarios_percent, created_at)
         values (v_office, v_lead, 'rascunho', 30, v_dia + time '12:00');
         update public.contracts set status = 'enviado' where lead_id = v_lead;
-        update public.contracts set status = 'assinado', signed_at = v_dia + time '15:00' + (random() * interval '5 hours') where lead_id = v_lead;
+        update public.contracts set status = 'assinado', signed_at = v_dia + time '15:00' + (random() * interval '5 hours'),
+               signature_provider = 'autentique', signature_ref = 'demo-' || i, sign_url = 'https://assina.ae/demo' || i,
+               pdf_url = 'https://api.autentique.com.br/documentos/demo' || i || '/assinado.pdf', dados_confirmados = i % 2 = 0
+         where lead_id = v_lead;
+        -- briefing estruturado para quem assinou
+        perform public.upsert_briefing(v_lead, jsonb_build_object(
+          'status', case when i % 3 = 0 then 'concluido' else 'em_andamento' end,
+          'teses', case when i % 2 = 0 then '["verbas_rescisorias","horas_extras"]'::jsonb else '["verbas_rescisorias"]'::jsonb end,
+          'dados_vinculo', jsonb_build_object('jornada', '44h semanais, às vezes ultrapassa', 'folga', 'domingo'),
+          'alertas', case when i % 5 = 0 then 'Cliente possui consignado descontado em folha' else null end,
+          'conteudo', E'- **Dados pessoais**\n  - Nome: ' || v_nome || E'\n- **Vínculo/empresa**\n  - Salário: R$ ' || v_salario::int || E'\n- **Pretensão/caso**\n  - Verbas rescisórias não pagas\n  - Horas extras além das 44h\n- **Qualificação/aceite**\n  - Cliente aceitou os honorários de 30% sobre o êxito'
+        ), 'ia', null, 'briefing');
       end if;
     end if;
 
@@ -152,6 +178,15 @@ begin
       update public.human_interventions h
          set created_at = v_dia + time '10:00', calls_count = (random() * 2)::int
        where h.lead_id = v_lead and h.status = 'pendente';
+      -- ações registradas pela equipe (ligação/mensagem/nota) em parte das intervenções
+      if v_member is not null and i % 2 = 0 then
+        insert into public.intervention_actions (office_id, intervention_id, lead_id, tipo, resultado, notas, created_by, created_at)
+        select v_office, h.id, v_lead, (array['ligacao','ligacao','mensagem','nota'])[1 + (i % 4)],
+               (array['atendeu_quer_fechar','nao_atendeu','mensagem_enviada','nota'])[1 + (i % 4)],
+               (array['Cliente atendeu e quer fechar; enviar contrato ainda hoje.','Não atendeu; tentar novamente no fim da tarde.','Mensagem enviada pedindo os documentos pendentes.','Cliente trocou de número; atualizar cadastro antes de ligar.'])[1 + (i % 4)],
+               v_member, v_dia + time '10:30'
+        from public.human_interventions h where h.lead_id = v_lead and h.status = 'pendente';
+      end if;
       if random() < 0.7 then
         update public.human_interventions h
            set status = 'resolvida', claimed_by = v_member, claimed_at = v_dia + time '11:00',

@@ -1,0 +1,516 @@
+{
+  "name": "CT 05 — Contrato: gerar, enviar para assinatura e receber o assinado",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "supabase/contracts",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "c5000000-0000-4000-8000-000000000001",
+      "name": "Webhook (Supabase: contracts INSERT/UPDATE)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "s0",
+              "leftValue": "={{ $json.headers['x-webhook-secret'] }}",
+              "rightValue": "={{ $env.SUPABASE_WEBHOOK_SECRET }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.body.record.status }}",
+              "rightValue": "enviado",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "s2",
+              "leftValue": "={{ $json.body.record.signature_ref ?? '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty"
+              }
+            },
+            {
+              "id": "s3",
+              "leftValue": "={{ $json.body.record.send_requested_at ?? '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c5000000-0000-4000-8000-000000000002",
+      "name": "Pedido de envio pendente?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select c.id as contract_id, c.lead_id, c.office_id,\n       public.contract_fill_data(c.lead_id) as dados,\n       coalesce(public.active_integration(c.office_id, 'assinatura'), 'autentique') as provider,\n       public.integration_secret(c.office_id, coalesce(public.active_integration(c.office_id, 'assinatura'), 'autentique')) as token,\n       (select i.config from public.integrations i where i.office_id = c.office_id and i.provider = coalesce(public.active_integration(c.office_id, 'assinatura'), 'autentique')) as provider_config,\n       ct.name as cliente_nome, ct.email as cliente_email, ct.wa_id,\n       (select cv.id from public.conversations cv where cv.lead_id = c.lead_id order by cv.last_message_at desc nulls last limit 1) as conversation_id\nfrom public.contracts c\njoin public.leads l on l.id = c.lead_id\njoin public.contacts ct on ct.id = l.contact_id\nwhere c.id = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.body.record.id }}"
+        }
+      },
+      "id": "c5000000-0000-4000-8000-000000000003",
+      "name": "Dados do contrato + token do provedor",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        -80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Preenche o modelo HTML com os dados do banco e prepara o arquivo para o conversor.\nconst d = $json.dados || {};\nlet html = d.template_html || '<p>Modelo de contrato não configurado.</p>';\nhtml = html.replace(/\\{\\{(\\w+)\\}\\}/g, (_, k) => (d[k] ?? '').toString());\nconst full = `<!doctype html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><style>body{font-family:Arial,sans-serif;font-size:12pt;margin:2.5cm}h1{font-size:16pt;text-align:center}h2{font-size:13pt;margin-top:1.2em}</style></head><body>${html}</body></html>`;\nreturn [{ json: { ...$json, html_len: full.length, nome_arquivo: `contrato-${$json.contract_id}.pdf` },\n          binary: { html: await this.helpers.prepareBinaryData(Buffer.from(full, 'utf8'), 'index.html', 'text/html') } }];"
+      },
+      "id": "c5000000-0000-4000-8000-000000000004",
+      "name": "Preencher modelo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GOTENBERG_URL }}/forms/chromium/convert/html",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "html"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "pdf"
+            }
+          }
+        }
+      },
+      "id": "c5000000-0000-4000-8000-000000000005",
+      "name": "HTML → PDF (Gotenberg)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        -80
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Monta a requisição multipart do GraphQL da Autentique (createDocument com upload).\n// Signatário recebe pelo WhatsApp (delivery_method WHATSAPP) e por e-mail quando houver.\nconst src = $('Dados do contrato + token do provedor').item.json;\nconst signer = { name: src.cliente_nome, action: 'SIGN', delivery_method: 'DELIVERY_METHOD_WHATSAPP', phone: `+${src.wa_id}` };\nif (src.cliente_email) signer.email = src.cliente_email;\nconst sandbox = String(src.provider_config?.sandbox ?? 'false') === 'true';\nconst operations = {\n  query: `mutation($document: DocumentInput!, $signers: [SignerInput!]!, $file: Upload!, $sandbox: Boolean) {\n    createDocument(document: $document, signers: $signers, file: $file, sandbox: $sandbox) {\n      id name signatures { public_id name email action { name } link { short_link } }\n    } }`,\n  variables: { document: { name: `Contrato de honorários - ${src.cliente_nome}` }, signers: [signer], file: null, sandbox }\n};\nreturn [{ json: { ...src, operations: JSON.stringify(operations), map: JSON.stringify({ '0': ['variables.file'] }) }, binary: { pdf: $input.item.binary.pdf } }];"
+      },
+      "id": "c5000000-0000-4000-8000-000000000006",
+      "name": "Montar createDocument",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.autentique.com.br/v2/graphql",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "operations",
+              "value": "={{ $json.operations }}"
+            },
+            {
+              "name": "map",
+              "value": "={{ $json.map }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "0",
+              "inputDataFieldName": "pdf"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c5000000-0000-4000-8000-000000000007",
+      "name": "Autentique: createDocument",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        -80
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json.data?.createDocument?.id ?? '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c5000000-0000-4000-8000-000000000008",
+      "name": "Criou?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with s as (\n  select public.contract_mark_sent($1::uuid, 'autentique', $2, $3, null, $4::jsonb)\n)\ninsert into public.messages (office_id, conversation_id, direction, sender, body, status, ai_meta)\nselect $5::uuid, $6::uuid, 'out', 'sistema',\n       'Aqui está o seu contrato de honorários para assinatura eletrônica: ' || $3 || E'\\nÉ só abrir, conferir e assinar. Qualquer dúvida, me chama.',\n       'pending', '{\"agent_role\":\"contrato\",\"kind\":\"contract_link\"}'::jsonb\nfrom s;",
+        "options": {
+          "queryReplacement": "={{ $('Dados do contrato + token do provedor').item.json.contract_id }}, {{ $json.data.createDocument.id }}, {{ $json.data.createDocument.signatures?.[0]?.link?.short_link ?? '' }}, {{ JSON.stringify($json.data.createDocument) }}, {{ $('Dados do contrato + token do provedor').item.json.office_id }}, {{ $('Dados do contrato + token do provedor').item.json.conversation_id }}"
+        }
+      },
+      "id": "c5000000-0000-4000-8000-000000000009",
+      "name": "Gravar referência + mensagem com o link",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1920,
+        -160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.contract_mark_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ $('Dados do contrato + token do provedor').item.json.contract_id }}, {{ JSON.stringify($json.errors ?? $json.error ?? $json).slice(0, 500) }}"
+        }
+      },
+      "id": "c5000000-0000-4000-8000-000000000010",
+      "name": "Registrar falha",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1920,
+        20
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "autentique/webhook",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "c5000000-0000-4000-8000-000000000011",
+      "name": "Webhook (Autentique)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza o evento da Autentique. Interessa: documento finalizado (todas as assinaturas feitas).\nconst b = $json.body || {};\nconst type = b.event?.type || b.type || '';\nconst doc = b.object || b.document || b.data || {};\nconst finished = /finish|complet|signed/i.test(type) || doc.signatures?.every?.(s => s.signed || s.signed_at) === true;\nconst pdf = doc.files?.signed || doc.files?.pades || doc.signed_file || null;\nreturn [{ json: { type, ref: doc.id || b.document_id || null, pdf_url: pdf, finished, raw_len: JSON.stringify(b).length } }];"
+      },
+      "id": "c5000000-0000-4000-8000-000000000012",
+      "name": "Interpretar evento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "f",
+              "leftValue": "={{ $json.finished }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "r",
+              "leftValue": "={{ $json.ref ?? '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c5000000-0000-4000-8000-000000000013",
+      "name": "Assinado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with k as (select * from public.contract_mark_signed($1, $2))\ninsert into public.messages (office_id, conversation_id, direction, sender, body, status, ai_meta)\nselect k.office_id, cv.id, 'out', 'sistema',\n       'Recebemos a sua assinatura, obrigado! Seu caso está ativo. Agora vamos para a entrevista: são algumas perguntas rápidas aqui pelo chat para montar um caso forte. Podemos começar?',\n       'pending', '{\"agent_role\":\"briefing\",\"kind\":\"contract_signed\"}'::jsonb\nfrom k join public.conversations cv on cv.lead_id = k.lead_id\nwhere k.id is not null\norder by cv.last_message_at desc nulls last limit 1;",
+        "options": {
+          "queryReplacement": "={{ $json.ref }}, {{ $json.pdf_url }}"
+        }
+      },
+      "id": "c5000000-0000-4000-8000-000000000014",
+      "name": "Marcar assinado + avisar o lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        720,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook (Supabase: contracts INSERT/UPDATE)": {
+      "main": [
+        [
+          {
+            "node": "Pedido de envio pendente?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pedido de envio pendente?": {
+      "main": [
+        [
+          {
+            "node": "Dados do contrato + token do provedor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Dados do contrato + token do provedor": {
+      "main": [
+        [
+          {
+            "node": "Preencher modelo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preencher modelo": {
+      "main": [
+        [
+          {
+            "node": "HTML → PDF (Gotenberg)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTML → PDF (Gotenberg)": {
+      "main": [
+        [
+          {
+            "node": "Montar createDocument",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar createDocument": {
+      "main": [
+        [
+          {
+            "node": "Autentique: createDocument",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Autentique: createDocument": {
+      "main": [
+        [
+          {
+            "node": "Criou?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Criou?": {
+      "main": [
+        [
+          {
+            "node": "Gravar referência + mensagem com o link",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Registrar falha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook (Autentique)": {
+      "main": [
+        [
+          {
+            "node": "Interpretar evento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar evento": {
+      "main": [
+        [
+          {
+            "node": "Assinado?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assinado?": {
+      "main": [
+        [
+          {
+            "node": "Marcar assinado + avisar o lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "notes": "Fluxo 1: Database Webhook do Supabase em public.contracts (INSERT e UPDATE) → quando status = enviado e sem signature_ref, busca contract_fill_data() + modelo HTML + token do provedor ativo (Vault), preenche, converte em PDF no Gotenberg (env GOTENBERG_URL, container docker gotenberg/gotenberg) e cria o documento na Autentique (GraphQL v2, upload multipart, signatário por WhatsApp). Grava signature_ref e sign_url com contract_mark_sent() e insere uma mensagem do sistema com o link (o WA 03 envia). Fluxo 2: webhook da Autentique (configurar em https://painel.autentique.com.br → Integrações → Webhooks apontando para <n8n>/webhook/autentique/webhook) → contract_mark_signed(ref, pdf) → o banco avança para briefing e o lead recebe a mensagem de boas-vindas à entrevista. Formato da mutation e do webhook escritos de memória: confirmar na primeira execução (falha fica em contracts.provider_payload.error). Outros provedores (ZapSign, Clicksign): trocar os nós 'Montar createDocument' e 'Autentique: createDocument'; o banco não muda."
+  }
+}

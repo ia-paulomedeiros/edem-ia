@@ -97,9 +97,10 @@ com alerta no card e responsável; o agente marca retornos como tarefas (autor I
 `search_path` fixo e execução só para authenticated/service_role.
 
 ### Sprint 3b — Assinatura eletrônica e mídia
-Integração com um provedor de assinatura (webhook de assinado → `contracts.status='assinado'`, que
-já dispara o resto). Mídia recebida no WhatsApp baixada para o bucket `provas` e ligada a
-`evidences.message_id`.
+Feito na 011 + `n8n/05`: pedido de envio (UI ou agente) → n8n preenche o modelo HTML, converte em
+PDF, cria o documento na Autentique e manda o link; webhook de assinado → `contract_mark_signed` →
+briefing. Régua de follow-up (`followup_rules`, `followup_due`, `n8n/06`). Ações da intervenção
+(`intervention_actions`). Pendente: mídia recebida no WhatsApp baixada para o bucket `provas`.
 
 ### Sprint 4 — Briefing e peça
 Agente de briefing conduz a entrevista e preenche `briefings.answers`; agente de redação monta
