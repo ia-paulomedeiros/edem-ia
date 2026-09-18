@@ -294,7 +294,7 @@ begin
 
   r := public.set_integration(b, 'anthropic', 'sk-ant-x', null, true);
   assert (select count(*) from public.integrations) = 3, 'Bruno vê as 3 integrações do B';
-  assert (select count(*) from public.integration_catalog) = 8, 'catálogo com 8 provedores';
+  assert (select count(*) from public.integration_catalog) = 9, 'catálogo com 9 provedores';
 
   -- funções do n8n não são executáveis pelo cliente
   assert not has_function_privilege('authenticated', 'public.integration_secret(uuid,text)', 'execute'), 'integration_secret bloqueada';

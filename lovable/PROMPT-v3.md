@@ -324,8 +324,8 @@ aparece na semana e no contador.
 1. **Sino de notificações** no rodapé da barra: badge com a soma de intervenções pendentes +
    casos com prescrição em alerta + tarefas atrasadas. Popover com três seções e link para a página
    certa. Contagem atualizada por Realtime nas três tabelas.
-2. `/marketing`: página "Em breve" com uma descrição honesta do que virá (origem dos leads e
-   campanhas). Não há dado no banco para isso ainda; não invente.
+2. `/marketing`: substituída pelo Prompt 8 (custos de marketing). Se este prompt rodar antes do
+   8, deixe uma página "Em breve" sem dado inventado.
 3. **Página `/config`**: substituída pelo Prompt 7 (layout do concorrente). Se este prompt rodar
    antes do 7, deixe `/config` como está.
 4. **Polimento**: estados vazios com ilustração leve e chamada para ação; esqueletos em toda
@@ -420,3 +420,49 @@ testado", e no SQL Editor `select * from public.integrations` não tem a chave (
 service_role devolve o valor. Testar muda o chip para "Teste solicitado". Um atendente abre
 Integrações e vê tudo desabilitado. Subir 3 arquivos em Modelos mostra "3 resultados"; marcar um
 como obrigatório mostra o chip OBRIGATÓRIO; a busca filtra pelo nome.
+
+---
+
+## Prompt 8 — Marketing (custos) e o custo por lead no caso
+
+**Pré-requisito.** `supabase/009_marketing.sql` aplicada e tipos regenerados. Ela cria a view
+`v_marketing_lancamentos` (um dia por linha: `dia, ads_brl, tokens_brl, total_brl, tem_manual,
+tem_importado, observacao, itens, updated_at`), as RPCs `marketing_resumo_p(p_office, p_from,
+p_to)` → jsonb (`ads_brl, tokens_brl, total_brl, lancamentos, leads, custo_medio_por_lead_brl,
+contratos, custo_por_contrato_brl, periodo`), `marketing_lancamentos_p(p_office, p_from, p_to)`
+→ linhas da view, `marketing_lancar(p_office, p_dia, p_ads_brl, p_tokens_brl, p_nota)` → linha
+do dia, `marketing_remover(p_office, p_dia)` → n, e `lead_cost(p_lead)` → jsonb (`tokens_brl,
+tokens_usd, ads_rateio_brl, custo_lead_brl, mes.custo_medio_lead_brl, cambio_usd_brl`), que já vem
+dentro de `lead_dossier().cost`. O catálogo de integrações ganhou **Meta Ads** (`kind = ads`).
+
+**Faça.**
+1. `/marketing` substitui o "Em breve", no layout do concorrente:
+   - Cabeçalho "Custos de Marketing" com "N lançamentos" e três números à direita: Investimento
+     Ads, Investimento Tokens, Total (de `marketing_resumo_p`). Abaixo deles, em texto menor:
+     "N leads no período · custo médio por lead R$ X · custo por contrato R$ Y". Mesmo filtro de
+     período do dashboard (Prompt 3a), padrão mês atual.
+   - Card **Novo lançamento**: Data (padrão hoje), Investimento Ads (R$, opcional), Custo tokens
+     (R$, opcional), Observação (opcional), botão "Lançar custo" → `marketing_lancar`. Ao lançar
+     numa data que já tem linha, a linha é atualizada (o banco faz upsert).
+   - Tabela **Lançamentos** (mais recente primeiro): Data, Ads, Tokens, Total (negrito),
+     Observação, chip "importado" quando `tem_importado` (tooltip listando `itens` com canal e
+     valor), ações Editar (abre o card preenchido) e Remover (confirma; `marketing_remover`; se a
+     linha tiver só itens importados, o botão fica desabilitado com tooltip "importado pela
+     integração; edite em Integrações"). Contador no cabeçalho da tabela.
+   - Rodapé discreto: "Dias sem lançamento de tokens usam a estimativa pelas mensagens da IA."
+     Só `admin` e `advogado` lançam e removem; os demais só leem.
+2. No **modal do caso**, o rodapé passa a mostrar `dossier.cost`: "Custo do lead R$ X" (=
+   `custo_lead_brl`, tooltip: "tokens R$ a + rateio de anúncios do dia R$ b (c leads no dia)") e ao
+   lado "média do mês R$ Y por lead" (= `mes.custo_medio_lead_brl`). O resumo da aba Histórico
+   usa os mesmos dois números. Nada em dólar na tela; dólar só no tooltip.
+3. Em `/config/integracoes`, o card **Meta Ads** aparece no grupo "Anúncios" com os avançados
+   `ad_account_id` e `currency`. Nada mais muda ali: a importação é do n8n, uma vez por dia.
+
+**Não faça.** Não calcule custo no front: tudo vem de `marketing_resumo_p`, da view e de
+`lead_cost`. Não some tokens estimados com tokens lançados no mesmo dia (o banco já escolhe).
+
+**Critério de aceite.** Lançar R$ 100 de Ads e R$ 20 de tokens para hoje mostra a linha com total
+R$ 120 e os cards do topo sobem na hora. O rodapé de um caso criado hoje mostra o rateio dos
+R$ 100 entre os leads de hoje. Remover a linha volta os cards. `select * from
+public.marketing_import_targets()` no SQL Editor (como service_role) lista a Meta Ads depois de
+salvar o token e ativar em Integrações.

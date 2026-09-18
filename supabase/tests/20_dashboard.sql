@@ -99,7 +99,49 @@ begin
   -- outro escritório não enxerga nada
   assert public.dashboard_geral('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') is null, 'dashboard de outro escritório é null';
 end $$;
+
+-- 009: marketing (lançamentos, tokens lançado > estimado, custo por lead, importação só service_role)
+do $$
+declare r jsonb; c uuid := 'cccccccc-cccc-cccc-cccc-cccccccccccc'; v_lead uuid; inv jsonb; d jsonb; tok_est numeric;
+begin
+  inv := public.dashboard_investimento_p(c, current_date, current_date);
+  tok_est := (inv->>'tokens_brl')::numeric;
+  r := public.marketing_lancar(c, current_date, 100, 20, 'teste');
+  assert (r->>'ads_brl')::numeric = 100 and (r->>'tokens_brl')::numeric = 20 and (r->>'total_brl')::numeric = 120, 'lançamento do dia';
+  assert (r->>'tem_manual')::boolean and not (r->>'tem_importado')::boolean, 'origem manual';
+  assert (select count(*) from public.marketing_lancamentos_p(c)) >= 1, 'lista de lançamentos';
+  r := public.marketing_resumo_p(c, current_date, current_date);
+  assert (r->>'ads_brl')::numeric = 100 and (r->>'tokens_brl')::numeric = 20, 'resumo do dia usa o lançado, não a estimativa';
+  inv := public.dashboard_investimento_p(c, current_date, current_date);
+  assert (inv->>'tokens_brl')::numeric = 20, 'dashboard usa o lançado (' || tok_est || ' estimado) => ' || (inv->>'tokens_brl');
+  assert (inv->>'ads_brl')::numeric = 100, 'dashboard ads do dia';
+  -- sem lançamento de tokens, vale a estimativa
+  assert (select sum(tokens_brl) from public.marketing_tokens_por_dia(c, current_date - 40, current_date - 1)) >= 0, 'tokens por dia';
+  assert (select count(*) from public.marketing_tokens_por_dia(c, current_date - 2, current_date)) = 3, '3 dias';
+  -- custo por lead
+  select id into v_lead from public.leads where office_id = c order by created_at limit 1;
+  d := public.lead_cost(v_lead);
+  assert (d->>'tokens_brl')::numeric > 0, 'custo tokens do lead';
+  assert (d->>'custo_lead_brl')::numeric >= (d->>'tokens_brl')::numeric, 'custo do lead inclui rateio';
+  assert (d->'mes'->>'custo_medio_lead_brl')::numeric > 0, 'média do mês';
+  assert public.lead_dossier(v_lead)->'cost' ? 'custo_lead_brl', 'dossiê traz o custo';
+  -- remover só apaga o manual
+  assert public.marketing_remover(c, current_date) = 2, 'removeu ads e tokens manuais';
+  assert not has_function_privilege('authenticated', 'public.marketing_import(uuid,date,text,numeric,numeric,text)', 'execute'), 'import bloqueado';
+  assert not has_function_privilege('authenticated', 'public.marketing_import_targets()', 'execute'), 'targets bloqueado';
+  assert (select count(*) from public.integration_catalog where provider = 'meta_ads' and kind = 'ads') = 1, 'meta_ads no catálogo';
+end $$;
 reset role; reset request.jwt.claim.sub;
+do $$
+declare c uuid := 'cccccccc-cccc-cccc-cccc-cccccccccccc'; r record;
+begin
+  perform public.marketing_import(c, current_date - 1, 'tokens_anthropic', 55, 10, 'Anthropic cost_report');
+  perform public.marketing_import(c, current_date - 1, 'meta_ads', 300, null, 'Meta Ads insights');
+  select * into r from public.v_marketing_lancamentos where office_id = c and dia = current_date - 1;
+  assert r.tem_importado and r.ads_brl = 300 and r.tokens_brl = 55, 'importado no dia';
+  assert (select tokens_brl from public.marketing_tokens_por_dia(c, current_date - 1, current_date - 1)) = 55, 'dashboard usa o importado';
+  assert (select count(*) from public.marketing_import_targets()) = 0, 'sem integração ativa com segredo => sem alvo';
+end $$;
 
 rollback;
 \echo DASHBOARD OK

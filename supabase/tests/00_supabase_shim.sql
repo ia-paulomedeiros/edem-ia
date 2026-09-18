@@ -39,6 +39,10 @@ language sql stable as $$
   select nullif(current_setting('request.jwt.claim.role', true), '')
 $$;
 
+-- como no Supabase: o cliente pode chamar auth.uid()/auth.role()
+grant usage on schema auth to anon, authenticated, service_role;
+grant execute on function auth.uid(), auth.role() to anon, authenticated, service_role;
+
 create table if not exists vault.secrets (
   id uuid primary key default gen_random_uuid(),
   name text unique,

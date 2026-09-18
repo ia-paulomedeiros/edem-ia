@@ -48,7 +48,7 @@ Personalizado) e por agente/usuário; "Limpar tudo". Cinco abas:
 | Clientes | `/clientes`: contatos com contrato assinado (`contacts.uf`) | `PROMPT-v3` |
 | Finalizados | `/finalizados`: `leads.phase='encerrado'` + `closed_by` | `PROMPT-v3` |
 | Histórico | `/historico`: feed de `case_events` | `PROMPT-v3` |
-| Marketing | sem schema ainda | placeholder |
+| Marketing (custos: Ads + tokens por dia, importação) | `ad_spend` como lançamentos, `v_marketing_lancamentos`, `marketing_*_p`, `lead_cost` (009) + `n8n/04` | 009; UI em `PROMPT-v3` Prompt 8 |
 | Contratos por ticket (HT/MT/LT) | `contracts.faixa` (alto/medio/baixo) via `faixa_ticket()` | 004 |
 | Regiões por UF | `contacts.uf` | 004 |
 | Valor de causa | `contracts.valor_causa` (default: `lead_qualification.verbas_total`) | 004 |
@@ -88,6 +88,10 @@ integrações por provedor com segredo no Vault (só RPC escreve; n8n resolve co
 registra o teste), modelos de petição como biblioteca de arquivos sem limite (bucket `modelos`),
 e prompts dos agentes fora do alcance do cliente (`agent_prompts` sem policy; `piece_templates`
 idem). Ninguém que usa o produto vê como os agentes são montados.
+Marketing (`009_marketing.sql`): lançamentos por dia com anúncios e tokens, manual ou importado
+(Meta Ads, Anthropic Admin, OpenAI Admin via `n8n/04`); nos dias sem lançamento de tokens vale a
+estimativa pelas mensagens; custo por lead = tokens do caso + rateio dos anúncios do dia, e média
+do mês, dentro do dossiê.
 
 ### Sprint 3b — Assinatura eletrônica e mídia
 Integração com um provedor de assinatura (webhook de assinado → `contracts.status='assinado'`, que

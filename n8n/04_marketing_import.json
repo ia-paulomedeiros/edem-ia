@@ -1,0 +1,257 @@
+{
+  "name": "MKT 04 — Importar custos (Meta Ads, Anthropic Admin, OpenAI Admin)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24,
+              "triggerAtHour": 4
+            }
+          ]
+        }
+      },
+      "id": "c4000000-0000-4000-8000-000000000001",
+      "name": "Todo dia 04:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select t.office_id, t.provider, t.config, t.cambio_usd_brl,\n       public.integration_secret(t.office_id, t.provider) as secret\nfrom public.marketing_import_targets() t;",
+        "options": {}
+      },
+      "id": "c4000000-0000-4000-8000-000000000002",
+      "name": "Alvos + segredo",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Monta uma requisição por alvo. Janela: ontem e anteontem (a Meta e a OpenAI ajustam o gasto do dia por até 48h).\nconst dias = Number($env.MARKETING_IMPORT_DAYS || 2);\nconst fim = new Date(); fim.setUTCHours(0,0,0,0);            // hoje 00:00 UTC (exclusivo)\nconst ini = new Date(fim); ini.setUTCDate(ini.getUTCDate() - dias);\nconst iso = d => d.toISOString().slice(0,10);\nconst out = [];\nfor (const it of $input.all()) {\n  const t = it.json;\n  const base = { office_id: t.office_id, provider: t.provider, cambio: Number(t.cambio_usd_brl || 5.5), config: t.config || {} };\n  if (t.provider === 'anthropic_admin') {\n    out.push({ ...base,\n      url: `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${iso(ini)}T00:00:00Z&ending_at=${iso(fim)}T00:00:00Z&bucket_width=1d`,\n      headers: { 'x-api-key': t.secret, 'anthropic-version': '2023-06-01', 'User-Agent': 'edem-ia/1.0' } });\n  } else if (t.provider === 'openai_admin') {\n    out.push({ ...base,\n      url: `https://api.openai.com/v1/organization/costs?start_time=${Math.floor(ini.getTime()/1000)}&end_time=${Math.floor(fim.getTime()/1000)}&bucket_width=1d&limit=31`,\n      headers: { 'Authorization': `Bearer ${t.secret}` } });\n  } else if (t.provider === 'meta_ads') {\n    const acct = String(t.config?.ad_account_id || '').startsWith('act_') ? t.config.ad_account_id : `act_${t.config?.ad_account_id}`;\n    const ontem = new Date(fim); ontem.setUTCDate(ontem.getUTCDate() - 1);\n    const tr = encodeURIComponent(JSON.stringify({ since: iso(ini), until: iso(ontem) }));\n    out.push({ ...base,\n      url: `https://graph.facebook.com/v21.0/${acct}/insights?fields=spend,date_start,date_stop&time_increment=1&time_range=${tr}&access_token=${encodeURIComponent(t.secret)}`,\n      headers: {} });\n  }\n}\nreturn out.map(j => ({ json: j }));"
+      },
+      "id": "c4000000-0000-4000-8000-000000000003",
+      "name": "Montar requisições",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify($json.headers) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          }
+        }
+      },
+      "id": "c4000000-0000-4000-8000-000000000004",
+      "name": "Buscar custos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza cada resposta em linhas {office_id, dia, canal, valor_brl, valor_usd, nota}.\nconst rows = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const req = $('Montar requisições').all()[i].json;\n  const body = items[i].json;\n  if (!body || body.error) { rows.push({ office_id: req.office_id, provider: req.provider, erro: JSON.stringify(body?.error || body).slice(0,300) }); continue; }\n  const porDia = {};\n  if (req.provider === 'anthropic_admin') {\n    // cost_report: data[].starting_at, results[].amount (string em centavos de USD)\n    for (const b of body.data || []) {\n      const dia = String(b.starting_at).slice(0,10);\n      const cents = (b.results || []).reduce((s, r) => s + Number(r.amount || 0), 0);\n      porDia[dia] = (porDia[dia] || 0) + cents / 100;\n    }\n    for (const [dia, usd] of Object.entries(porDia))\n      rows.push({ office_id: req.office_id, dia, canal: 'tokens_anthropic', valor_brl: +(usd * req.cambio).toFixed(2), valor_usd: +usd.toFixed(4), nota: 'Anthropic cost_report' });\n  } else if (req.provider === 'openai_admin') {\n    // organization/costs: data[].start_time (unix), results[].amount.value (USD)\n    for (const b of body.data || []) {\n      const dia = new Date(Number(b.start_time) * 1000).toISOString().slice(0,10);\n      const usd = (b.results || []).reduce((s, r) => s + Number(r.amount?.value || 0), 0);\n      porDia[dia] = (porDia[dia] || 0) + usd;\n    }\n    for (const [dia, usd] of Object.entries(porDia))\n      rows.push({ office_id: req.office_id, dia, canal: 'tokens_openai', valor_brl: +(usd * req.cambio).toFixed(2), valor_usd: +usd.toFixed(4), nota: 'OpenAI organization/costs' });\n  } else if (req.provider === 'meta_ads') {\n    // insights: data[].spend (moeda da conta), date_start\n    const brlConta = String(req.config?.currency || 'BRL').toUpperCase() === 'BRL';\n    for (const d of body.data || []) {\n      const v = Number(d.spend || 0);\n      rows.push({ office_id: req.office_id, dia: d.date_start, canal: 'meta_ads',\n                  valor_brl: +((brlConta ? v : v * req.cambio)).toFixed(2), valor_usd: brlConta ? null : +v.toFixed(2), nota: 'Meta Ads insights' });\n    }\n  }\n}\nreturn rows.map(j => ({ json: j }));"
+      },
+      "id": "c4000000-0000-4000-8000-000000000005",
+      "name": "Normalizar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json.erro }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c4000000-0000-4000-8000-000000000006",
+      "name": "Sem erro?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.marketing_import($1::uuid, $2::date, $3, $4::numeric, $5::numeric, $6);",
+        "options": {
+          "queryReplacement": "={{ $json.office_id }}, {{ $json.dia }}, {{ $json.canal }}, {{ $json.valor_brl }}, {{ $json.valor_usd ?? null }}, {{ $json.nota }}"
+        }
+      },
+      "id": "c4000000-0000-4000-8000-000000000007",
+      "name": "Gravar lançamento importado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1440,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update public.integrations set status = 'falhou', last_error = left($3, 500), tested_at = now()\n where office_id = $1::uuid and provider = $2;",
+        "options": {
+          "queryReplacement": "={{ $json.office_id }}, {{ $json.provider }}, {{ $json.erro }}"
+        }
+      },
+      "id": "c4000000-0000-4000-8000-000000000008",
+      "name": "Registrar falha na integração",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1440,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Todo dia 04:00": {
+      "main": [
+        [
+          {
+            "node": "Alvos + segredo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alvos + segredo": {
+      "main": [
+        [
+          {
+            "node": "Montar requisições",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar requisições": {
+      "main": [
+        [
+          {
+            "node": "Buscar custos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar custos": {
+      "main": [
+        [
+          {
+            "node": "Normalizar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar": {
+      "main": [
+        [
+          {
+            "node": "Sem erro?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sem erro?": {
+      "main": [
+        [
+          {
+            "node": "Gravar lançamento importado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Registrar falha na integração",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "notes": "Roda todo dia às 04:00 e importa ontem e anteontem (MARKETING_IMPORT_DAYS, padrão 2). Alvos: integrações ativas com segredo dos provedores meta_ads, anthropic_admin, openai_admin (marketing_import_targets, só service_role). Segredo resolvido por integration_secret(); nunca sai do n8n. Grava com marketing_import() (origem 'importado'); um dia por canal, reimportar sobrescreve. Anthropic: cost_report devolve amount em centavos de USD; OpenAI: organization/costs em USD; ambos convertidos por office_params.cambio_usd_brl. Meta: insights por dia na moeda da conta (config.currency; padrão BRL). Endpoints da OpenAI e da Meta escritos de memória: confirmar na primeira execução (a falha fica em integrations.last_error)."
+  }
+}

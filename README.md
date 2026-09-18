@@ -22,13 +22,15 @@ Vault) + n8n + WhatsApp Cloud API.
 | Sprint 3 — período livre, jornada por agente, produtividade da fila (desfecho), investimento Ads + tokens em BRL, protocolos | `supabase/006_dashboard_periodo.sql` | Aplicada e testada |
 | Sprint 3 — fila como esteira: grupos por tipo, P1..P4, observação, marcadores, ligações, atribuição, `v_intervention_cards` | `supabase/007_fila.sql` | Aplicada e testada |
 | Sprint 3 — configurações no layout do concorrente: dados da empresa, integrações com segredo no Vault, modelos de petição como biblioteca de arquivos, prompts dos agentes ocultos | `supabase/008_configuracoes.sql` | Aplicada e testada |
-| Sprint 3 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos, Configurações | `lovable/PROMPT-v3.md` | 7 prompts |
+| Sprint 3 — Marketing: lançamentos por dia (anúncios + tokens, manual ou importado), tokens lançado > estimado, custo por lead, importação Meta Ads / Anthropic Admin / OpenAI Admin | `supabase/009_marketing.sql` + `n8n/04_marketing_import.json` | Aplicada e testada; n8n JSON válido |
+| Sprint 3 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos, Configurações, Marketing | `lovable/PROMPT-v3.md` | 8 prompts |
 | Dados de demonstração (60 leads no mês, contratos, custos, empresa, integrações, 47 modelos) | `supabase/seed_demo.sql` | Testado; reversível |
 
-"Aplicada e testada" = `supabase/tests/run.sh` roda 001→008 duas vezes num PostgreSQL 16 limpo
+"Aplicada e testada" = `supabase/tests/run.sh` roda 001→009 duas vezes num PostgreSQL 16 limpo
 (idempotência) e passa dois testes: o smoke (ingestão idempotente, isolamento entre escritórios para
 leads, mensagens, tarefas, eventos e `lead_dossier`, trava do takeover, fase com autor, portão,
-prescrição, fila, efeitos do agente, integrações com Vault, modelos, prompts invisíveis) e o de dashboard (seed de 60 leads e as cinco RPCs como membro).
+prescrição, fila, efeitos do agente, integrações com Vault, modelos, prompts invisíveis) e o de dashboard
+(seed de 60 leads, as cinco RPCs como membro, marketing e custo por lead) (seed de 60 leads e as cinco RPCs como membro).
 
 ## Decisões que não podem ser violadas
 
@@ -45,9 +47,10 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
 
 ## Como aplicar no Supabase
 
-1. SQL Editor: colar `supabase/apply_all.sql` (001..008 juntas) e executar. Ou rodar
+1. SQL Editor: colar `supabase/apply_all.sql` (001..009 juntas) e executar. Ou rodar
    `001_schema.sql`, `002_dominio_juridico.sql`, `003_caso_unico.sql`, `004_dashboard.sql`,
-   `005_funil.sql`, `006_dashboard_periodo.sql`, `007_fila.sql` e `008_configuracoes.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
+   `005_funil.sql`, `006_dashboard_periodo.sql`, `007_fila.sql`, `008_configuracoes.sql` e
+   `009_marketing.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
    das individuais (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
    Opcional: `seed_demo.sql` cria 60 leads de demonstração (reversível pelo bloco LIMPEZA).
 2. Token da Meta: pelo painel, Configurações → Integrações → WhatsApp Cloud API (Meta), que chama
@@ -62,7 +65,7 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
    ```
 4. Database Webhooks: INSERT em `public.messages` → `<n8n>/webhook/supabase/messages`, header
    `x-webhook-secret`.
-5. n8n: importar os três JSON, criar credencial Postgres (connection string com `service_role`) e
+5. n8n: importar os quatro JSON (o 04 importa custos de marketing uma vez por dia), criar credencial Postgres (connection string com `service_role`) e
    Anthropic, definir `WA_VERIFY_TOKEN`, `SUPABASE_WEBHOOK_SECRET`, `LLM_PRICE_IN_PER_MTOK`,
    `LLM_PRICE_OUT_PER_MTOK`. Ativar os três.
 6. Meta: webhook `<n8n>/webhook/whatsapp` com o `WA_VERIFY_TOKEN`; assinar `messages`.
@@ -83,8 +86,8 @@ Saída esperada termina em `SMOKE OK`.
 
 ```
 docs/       blueprint e recalibragem do backlog
-supabase/   migrations 001..008, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard)
-n8n/        três workflows exportados
+supabase/   migrations 001..009, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard)
+n8n/        quatro workflows exportados (verificação, inbound com agente, envio manual, importação de custos)
 lovable/    prompts de build v1 (monitor), v2 (caso único) e v3 (paridade e dashboard)
 ```
 

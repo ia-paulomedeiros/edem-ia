@@ -6,7 +6,7 @@
 -- assinados espalhados pelos dias, UFs variadas e alguns encerrados.
 -- Tudo marcado com wa_id começando em '5500' para poder apagar depois.
 --
--- Rodar no SQL Editor depois de 001..008. Pode rodar mais de uma vez (apaga
+-- Rodar no SQL Editor depois de 001..009. Pode rodar mais de uma vez (apaga
 -- e recria o demo). Para remover: rode só o bloco "LIMPEZA".
 -- =============================================================================
 
