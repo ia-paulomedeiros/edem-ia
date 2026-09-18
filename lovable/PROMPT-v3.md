@@ -522,3 +522,43 @@ para Aguardando e escrever um alerta faz o card mostrar a faixa amarela e o Hist
 ganhar "moveu a peça de Revisão para Aguardando" com o seu nome. Em Agendamentos, hoje mostra os
 retornos do seed com os realizados em cinza e os atrasados em vermelho; marcar um como feito muda
 o chip sem recarregar.
+
+---
+
+## Prompt 10 — Clientes igual ao concorrente e sino em português
+
+**Contexto.** `v_case_cards` (`lead_id, phase, assigned_to, contact_name, contact_phone, empresa,
+prescricao_alerta, prescricao_vencida, prescricao_dias`), `v_legal_cards` (`lead_id, etapa,
+etapa_ordem, status`), `contracts` (`signed_at, valor_causa, faixa`), `contacts.uf/cidade`,
+`profiles.full_name`, `v_intervention_cards` (`lead_id, contact_name, title, category, grupo,
+priority`), `v_tasks` (`situacao, contact_name, title, due_at`).
+
+**Faça.**
+1. **`/clientes`** (contatos com contrato assinado) no layout do concorrente:
+   - Topo: busca (nome, telefone), botão **Filtros** (UF, etapa atual, responsável, faixa) e o
+     contador "N clientes" à direita.
+   - Tabela com as colunas, nesta ordem: **Cliente** (avatar com a inicial, nome em negrito,
+     telefone com ícone embaixo), **Etapa atual** (chip), **Responsável** (nome de
+     `profiles` via `assigned_to`, ou "—"), **Empresa**, **Valor da causa**, **Cliente desde**
+     (tempo relativo desde `signed_at`, ex.: "há 2 dias"; tooltip com a data completa).
+   - Etapa atual: se o lead tiver linha em `v_legal_cards`, use `etapa` ("Revisão",
+     "Aguardando", "Saneamento", "Pronto p/ protocolo", "Protocolado"); senão, pela fase:
+     `briefing` → "Em entrevista", `peca` → "Em redação", `encerrado` → "Encerrado", outras →
+     o nome da fase. Cores: Em entrevista azul-claro, Protocolado roxo-claro, demais cinza.
+   - Paginação no rodapé: "1–50 de N", "Por página 50 | 100", Anterior / Próxima.
+   - Clicar na linha abre o modal do caso.
+2. **Sino de notificações**: três seções, cada uma com link para a página certa:
+   - **Intervenção humana (N)**: cada item mostra `title` (texto legível, nunca a categoria
+     crua), o nome do lead em cinza e o chip P1..P4; clicar abre o caso. Máximo 6 itens e
+     "ver todas".
+   - **Prescrição em alerta (N)**: leads de `v_case_cards` com `prescricao_alerta` ou
+     `prescricao_vencida`; item = nome do lead e "prescreve em X dias" (vermelho se vencida).
+   - **Tarefas atrasadas (N)**: `v_tasks` com `situacao = 'atrasado'`; item = título, nome do
+     lead e hora.
+   - Badge = soma das três. Se uma seção estiver vazia, mostre "Nada por aqui".
+3. Nada de código de categoria (`snake_case`) visível em lugar nenhum do app. Onde aparecer,
+   troque por rótulo em português.
+
+**Critério de aceite.** Com o seed, Clientes mostra 33 clientes com etapas variadas (não só
+"Briefing"), responsável preenchido e "há N dias". O sino lista títulos legíveis com o nome do
+lead e uma seção de prescrição.

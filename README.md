@@ -24,7 +24,7 @@ Vault) + n8n + WhatsApp Cloud API.
 | Sprint 3 — configurações no layout do concorrente: dados da empresa, integrações com segredo no Vault, modelos de petição como biblioteca de arquivos, prompts dos agentes ocultos | `supabase/008_configuracoes.sql` | Aplicada e testada |
 | Sprint 3 — Marketing: lançamentos por dia (anúncios + tokens, manual ou importado), tokens lançado > estimado, custo por lead, importação Meta Ads / Anthropic Admin / OpenAI Admin | `supabase/009_marketing.sql` + `n8n/04_marketing_import.json` | Aplicada e testada; n8n JSON válido |
 | Sprint 3 — Jurídico como esteira (Revisão, Aguardando, Saneamento, Pronto p/ protocolo, Protocolado) com alerta e responsável, agenda por dia com tarefas do agente, limpeza do linter (search_path, execução só authenticated/service_role) | `supabase/010_juridico_agenda.sql` | Aplicada e testada |
-| Sprint 3 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos, Configurações, Marketing | `lovable/PROMPT-v3.md` | 9 prompts |
+| Sprint 3 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos, Configurações, Marketing | `lovable/PROMPT-v3.md` | 10 prompts |
 | Dados de demonstração (60 leads no mês, contratos, custos, empresa, integrações, 47 modelos) | `supabase/seed_demo.sql` | Testado; reversível |
 
 "Aplicada e testada" = `supabase/tests/run.sh` roda 001→010 duas vezes num PostgreSQL 16 limpo
