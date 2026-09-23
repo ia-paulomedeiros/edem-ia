@@ -346,6 +346,198 @@
           "name": "Supabase (service_role)"
         }
       }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "a",
+              "leftValue": "={{ $('Extrair itens').item.json.media?.type ?? '' }}",
+              "rightValue": "^(audio|voice)$",
+              "operator": {
+                "type": "string",
+                "operation": "regex"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c2000000-0000-4000-8000-0000000000a1",
+      "name": "É áudio?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select wn.office_id, s.decrypted_secret as wa_token, public.integration_secret(wn.office_id, 'openai_whisper') as whisper_key,\n       coalesce((select i.config->>'language' from public.integrations i where i.office_id = wn.office_id and i.provider = 'openai_whisper'), 'pt') as language\nfrom public.whatsapp_numbers wn\nleft join vault.decrypted_secrets s on s.name = wn.token_secret_name\nwhere wn.phone_number_id = $1;",
+        "options": {
+          "queryReplacement": "={{ $('Extrair itens').item.json.phone_number_id }}"
+        }
+      },
+      "id": "c2000000-0000-4000-8000-0000000000a2",
+      "name": "Tokens (WhatsApp + Whisper)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.facebook.com/v21.0/{{ $('Extrair itens').item.json.media.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.wa_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c2000000-0000-4000-8000-0000000000a3",
+      "name": "URL da mídia",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        -100
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Tokens (WhatsApp + Whisper)').item.json.wa_token }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "audio"
+            }
+          }
+        }
+      },
+      "id": "c2000000-0000-4000-8000-0000000000a4",
+      "name": "Baixar áudio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        -100
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/audio/transcriptions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Tokens (WhatsApp + Whisper)').item.json.whisper_key }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "whisper-1"
+            },
+            {
+              "name": "language",
+              "value": "={{ $('Tokens (WhatsApp + Whisper)').item.json.language }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "audio"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c2000000-0000-4000-8000-0000000000a5",
+      "name": "Transcrever (Whisper)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        -100
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update public.messages\n   set body = coalesce(nullif($2, ''), body),\n       media = coalesce(media, '{}'::jsonb) || jsonb_build_object('transcript', $2, 'transcribed_at', now())\n where wa_message_id = $1\n returning conversation_id;",
+        "options": {
+          "queryReplacement": "={{ $('Extrair itens').item.json.wa_message_id }}, {{ $json.text ?? '' }}"
+        }
+      },
+      "id": "c2000000-0000-4000-8000-0000000000a6",
+      "name": "Gravar transcrição",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2160,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Devolve o item original da ingestão para o fluxo seguir (com ou sem transcrição).\nreturn [{ json: $('ingest_inbound (linha primeiro)').item.json }];"
+      },
+      "id": "c2000000-0000-4000-8000-0000000000a7",
+      "name": "Retomar fluxo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        0
+      ]
     }
   ],
   "connections": {
@@ -393,7 +585,7 @@
       "main": [
         [
           {
-            "node": "ai_should_reply? (trava no banco)",
+            "node": "É áudio?",
             "type": "main",
             "index": 0
           }
@@ -493,13 +685,97 @@
           }
         ]
       ]
+    },
+    "É áudio?": {
+      "main": [
+        [
+          {
+            "node": "Tokens (WhatsApp + Whisper)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retomar fluxo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tokens (WhatsApp + Whisper)": {
+      "main": [
+        [
+          {
+            "node": "URL da mídia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "URL da mídia": {
+      "main": [
+        [
+          {
+            "node": "Baixar áudio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baixar áudio": {
+      "main": [
+        [
+          {
+            "node": "Transcrever (Whisper)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcrever (Whisper)": {
+      "main": [
+        [
+          {
+            "node": "Gravar transcrição",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar transcrição": {
+      "main": [
+        [
+          {
+            "node": "Retomar fluxo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retomar fluxo": {
+      "main": [
+        [
+          {
+            "node": "ai_should_reply? (trava no banco)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "Credencial Postgres = connection string do Supabase com service_role (bypassa RLS; só o n8n usa). Env: LLM_PRICE_IN_PER_MTOK, LLM_PRICE_OUT_PER_MTOK para o custo em ai_meta. O prompt de cada agente vem de public.agents.system_prompt (pendência: conteúdo). Mídia recebida: baixar via /{media_id} e subir no bucket 'provas' fica para o Sprint 3."
+    "notes": "Credencial Postgres = connection string do Supabase com service_role (bypassa RLS; só o n8n usa). Env: LLM_PRICE_IN_PER_MTOK, LLM_PRICE_OUT_PER_MTOK para o custo em ai_meta. O prompt de cada agente vem de public.agents.system_prompt (pendência: conteúdo). Mídia recebida: baixar via /{media_id} e subir no bucket 'provas' fica para o Sprint 3. Áudio (013): antes de chamar o agente, baixa a mídia da Meta e transcreve com o Whisper (chave da integração openai_whisper; sem chave, o agente recebe o áudio sem texto e pede para repetir). A transcrição vira o body da mensagem e fica em media.transcript. O prompt de cada agente vem de agent_config_full() com {{agent_name}}/{{office_name}}/{{honorarios}}/{{whatsapp_juridico}} resolvidos."
   },
   "notes": ""
 }

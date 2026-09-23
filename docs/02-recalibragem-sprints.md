@@ -117,8 +117,15 @@ produto) e medição do que for escolhido (escritório, usuário ou volume).
 Nome e domínio (pendência), e-mail transacional, convite de membros. (Cadastro do número da Meta e
 segredo no Vault pelo painel: feito na 008.)
 
+### Sprint 4 — Fluxo do concorrente (`013_fluxo_laquila.sql`)
+Contrato antes de cálculo e provas; quadro de 7 colunas; petição com checklist de revisão,
+aprovação e protocolo; modelos de petição internos (só `platform_admins`); presença digital e
+WhatsApp do jurídico; encerrar com tipo e reabrir para a fase anterior; templates da Meta para a
+régua fora da janela de 24h; CPF validado; áudio transcrito (n8n 02). Pendente: n8n 07 (peça como
+Google Doc com Sincronizar) e n8n 08 (geração da peça pelos blocos + modelos da tese).
+
 ## Pendências de produto (não de código)
 
 - Nome e domínio. Trava identidade visual, e-mail transacional e onboarding.
 - Modelo de cobrança: por escritório, por usuário ou por volume de conversa.
-- Prompt de cada um dos sete agentes (entra em `agent_prompts` por SQL/service_role; não há tela).
+- Prompts dos sete agentes: v1 na 013 (roteiro do concorrente: recepção → fatos → viabilidade e proposta → dados e contrato → entrevista → viabilidade → coleta → peça). Revisar tom por escritório.

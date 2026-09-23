@@ -24,7 +24,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "select * from public.followup_due(200);",
+        "query": "select * from public.followup_queue(200);",
         "options": {}
       },
       "id": "c6000000-0000-4000-8000-000000000002",
@@ -44,7 +44,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Renderiza o passo da régua. Nome: só o primeiro nome.\nreturn $input.all().map(it => {\n  const j = it.json; const nome = String(j.nome || '').trim().split(' ')[0] || 'olá';\n  const body = String(j.template || '').replace(/\\{\\{nome\\}\\}/g, nome).replace(/\\{\\{escritorio\\}\\}/g, j.escritorio || 'escritório');\n  return { json: { ...j, body } };\n});"
+        "jsCode": "// Renderiza o passo da régua. Janela de 24h aberta => texto livre; fechada => template aprovado (ou pula).\nconst out = [];\nfor (const it of $input.all()) {\n  const j = it.json; const nome = String(j.nome || '').trim().split(' ')[0] || 'olá';\n  const body = String(j.template || '').replace(/\\{\\{nome\\}\\}/g, nome).replace(/\\{\\{escritorio\\}\\}/g, j.escritorio || 'escritório');\n  let template = null;\n  if (!j.janela_aberta) {\n    if (!j.template_name) { out.push({ json: { ...j, body, skip: true, motivo: 'janela fechada e sem template aprovado' } }); continue; }\n    template = { name: j.template_name, language: { code: j.template_language || 'pt_BR' },\n                 components: [{ type: 'body', parameters: [{ type: 'text', text: nome }, { type: 'text', text: j.escritorio || 'escritório' }] }] };\n  }\n  out.push({ json: { ...j, body, template, skip: false } });\n}\nreturn out;"
       },
       "id": "c6000000-0000-4000-8000-000000000003",
       "name": "Renderizar mensagem",
@@ -58,9 +58,9 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "with m as (\n  insert into public.messages (office_id, conversation_id, direction, sender, body, status, ai_meta)\n  values ($1::uuid, $2::uuid, 'out', 'sistema', $3, 'pending', jsonb_build_object('agent_role', 'followup', 'step', $4::int))\n  returning id\n)\nselect m.id as message_id, public.followup_mark_sent($5::uuid) as regua from m;",
+        "query": "with m as (\n  insert into public.messages (office_id, conversation_id, direction, sender, body, status, ai_meta, template)\n  values ($1::uuid, $2::uuid, 'out', 'sistema', $3, 'pending', jsonb_build_object('agent_role', 'followup', 'step', $4::int), $6::jsonb)\n  returning id\n)\nselect m.id as message_id, public.followup_mark_sent($5::uuid) as regua from m;",
         "options": {
-          "queryReplacement": "={{ $json.office_id }}, {{ $json.conversation_id }}, {{ $json.body }}, {{ $json.step }}, {{ $json.lead_id }}"
+          "queryReplacement": "={{ $json.office_id }}, {{ $json.conversation_id }}, {{ $json.body }}, {{ $json.step }}, {{ $json.lead_id }}, {{ $json.template ? JSON.stringify($json.template) : null }}"
         }
       },
       "id": "c6000000-0000-4000-8000-000000000004",
@@ -77,6 +77,38 @@
           "name": "Supabase (service_role)"
         }
       }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "s",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c6000000-0000-4000-8000-000000000005",
+      "name": "Pode enviar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        600,
+        0
+      ]
     }
   ],
   "connections": {
@@ -106,11 +138,23 @@
       "main": [
         [
           {
-            "node": "Gravar mensagem + avançar a régua",
+            "node": "Pode enviar?",
             "type": "main",
             "index": 0
           }
         ]
+      ]
+    },
+    "Pode enviar?": {
+      "main": [
+        [
+          {
+            "node": "Gravar mensagem + avançar a régua",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
       ]
     }
   },
@@ -118,6 +162,6 @@
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "A cada 30 min lê followup_due(): leads que a IA respondeu e ficaram calados, não pausados, não assumidos pela equipe, sem intervenção aberta, com o próximo passo vencido. Para cada um grava uma mensagem do sistema (o WA 03 envia; não pausa a IA) e chama followup_mark_sent(): agenda o próximo passo pela regra do escritório (followup_rules: office_id nulo = padrão global de 3 passos: 4h, 24h, 72h) ou, no fim, abre a intervenção 'follow-up esgotado'. Qualquer resposta do lead zera a régua (trigger em messages). Nota: só service_role executa followup_due/followup_mark_sent."
+    "notes": "A cada 30 min lê followup_due(): leads que a IA respondeu e ficaram calados, não pausados, não assumidos pela equipe, sem intervenção aberta, com o próximo passo vencido. Para cada um grava uma mensagem do sistema (o WA 03 envia; não pausa a IA) e chama followup_mark_sent(): agenda o próximo passo pela regra do escritório (followup_rules: office_id nulo = padrão global de 3 passos: 4h, 24h, 72h) ou, no fim, abre a intervenção 'follow-up esgotado'. Qualquer resposta do lead zera a régua (trigger em messages). Nota: só service_role executa followup_due/followup_mark_sent. 013: usa followup_queue(); quando a última resposta do lead tem mais de 24h, a Meta só aceita template aprovado: a regra do passo aponta template_name (wa_templates, status aprovado) e a mensagem sai como template com {{1}}=nome, {{2}}=escritório. Sem template aprovado, o passo é pulado e nada é marcado."
   }
 }

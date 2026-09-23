@@ -89,7 +89,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "select m.id as message_id, m.body, ct.wa_id, wn.phone_number_id, s.decrypted_secret as token\nfrom public.messages m\njoin public.conversations c on c.id = m.conversation_id\njoin public.contacts ct on ct.id = c.contact_id\njoin public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id\nleft join vault.decrypted_secrets s on s.name = wn.token_secret_name\nwhere m.id = $1 and m.status = 'pending';",
+        "query": "select m.id as message_id, m.body, m.template, ct.wa_id, wn.phone_number_id, s.decrypted_secret as token\nfrom public.messages m\njoin public.conversations c on c.id = m.conversation_id\njoin public.contacts ct on ct.id = c.contact_id\njoin public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id\nleft join vault.decrypted_secrets s on s.name = wn.token_secret_name\nwhere m.id = $1 and m.status = 'pending';",
         "options": {
           "queryReplacement": "={{ $json.body.record.id }}"
         }
@@ -124,7 +124,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.wa_id, type: 'text', text: { body: $json.body } }) }}",
+        "jsonBody": "={{ JSON.stringify($json.template ? { messaging_product: 'whatsapp', to: $json.wa_id, type: 'template', template: $json.template } : { messaging_product: 'whatsapp', to: $json.wa_id, type: 'text', text: { body: $json.body } }) }}",
         "options": {}
       },
       "id": "c3000000-0000-4000-8000-000000000004",
@@ -212,6 +212,6 @@
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "No Supabase: Database > Webhooks > nova: tabela public.messages, evento INSERT, URL = <n8n>/webhook/supabase/messages, header x-webhook-secret = SUPABASE_WEBHOOK_SECRET (env do n8n). A UI nunca chama a Graph API: ela só cria a linha (send_manual_message). Desde a 011 também envia mensagens com sender = sistema (link do contrato, régua de follow-up): elas não pausam a IA."
+    "notes": "No Supabase: Database > Webhooks > nova: tabela public.messages, evento INSERT, URL = <n8n>/webhook/supabase/messages, header x-webhook-secret = SUPABASE_WEBHOOK_SECRET (env do n8n). A UI nunca chama a Graph API: ela só cria a linha (send_manual_message). Desde a 011 também envia mensagens com sender = sistema (link do contrato, régua de follow-up): elas não pausam a IA. Se messages.template estiver preenchido ({name, language:{code}, components}), envia como template (janela de 24h fechada); senão, texto livre."
   }
 }

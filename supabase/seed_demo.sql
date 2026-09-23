@@ -34,7 +34,7 @@ declare
   v_ufs text[] := array['SP','SP','SP','SP','SP','RJ','RJ','BA','BA','PR','PR','ES','MG','PE','RS'];
   v_nomes text[] := array['Ana','Bruno','Carla','Diego','Elaine','Fábio','Gisele','Henrique','Isabela','João','Karina','Leandro','Marina','Nelson','Olívia','Paulo','Renata','Sérgio','Tatiane','Vinícius'];
   v_sobren text[] := array['Silva','Souza','Oliveira','Santos','Pereira','Lima','Costa','Ferreira','Almeida','Rocha'];
-  v_fases public.case_phase[] := array['triagem','qualificacao','provas','calculo','contrato','briefing','peca'];
+  v_fases public.case_phase[] := array['triagem','qualificacao','qualificacao','contrato','contrato','briefing','briefing','calculo','provas','peca','peca','peca'];
   v_inicio date := date_trunc('month', current_date)::date;
   v_fim date := least(current_date, (date_trunc('month', current_date) + interval '1 month - 1 day')::date);
 begin
@@ -108,9 +108,14 @@ begin
       update public.leads set closed_reason = (array['Sem resposta / não atende mais','Fora do escopo (não é trabalhista)','Já tem advogado','Prescrito'])[1 + (i % 4)] where id = v_lead;
       perform public.advance_phase(v_lead, 'encerrado', 'ia', null, 'qualificacao', 'fora do escopo');
     else
-      v_fase := v_fases[1 + (random() * 6)::int];
+      v_fase := v_fases[1 + (i % 12)];
       perform public.advance_phase(v_lead, v_fase, 'ia', null, public.agent_for_phase(v_fase), 'demo');
-      if random() < 0.45 then
+      if v_fase = 'contrato' then
+        -- Closer: contrato enviado, aguardando assinatura
+        insert into public.contracts (office_id, lead_id, status, honorarios_percent, created_at, signature_provider, signature_ref, sign_url, send_requested_at, requested_by_actor)
+        values (v_office, v_lead, 'rascunho', 30, v_dia + time '12:00', 'autentique', 'demo-env-' || i, 'https://assina.ae/demo' || i, v_dia + time '12:00', 'ia');
+        update public.contracts set status = 'enviado' where lead_id = v_lead;
+      elsif public.phase_order(v_fase) >= public.phase_order('briefing') then
         insert into public.contracts (office_id, lead_id, status, honorarios_percent, created_at)
         values (v_office, v_lead, 'rascunho', 30, v_dia + time '12:00');
         update public.contracts set status = 'enviado' where lead_id = v_lead;

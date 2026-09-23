@@ -696,3 +696,79 @@ só, para o Histórico ter um evento único.
 **Critério de aceite.** Com o seed, a visão "Por lead" mostra leads com "2 tarefas abertas" ou
 mais. Abrir um deles e clicar em "Concluir lead (2 pendências)" tira o card das duas visões e o
 Histórico do caso ganha um único evento com o seu nome e o desfecho escolhido.
+
+---
+
+## Prompt 13 — O fluxo do concorrente: quadro de 7 colunas, Petição com revisão e protocolo, Empresa e Finalizados
+
+**Pré-requisito.** `supabase/013_fluxo_laquila.sql` aplicada e tipos regenerados. A ordem das
+fases mudou: contrato vem ANTES de cálculo e provas. O banco expõe `workflow_columns()` (7
+colunas na ordem: closer, entrevista, viabilidade, coleta_docs, saneamento, revisao, peca),
+`v_workflow_cards` (tudo de `v_case_cards` + `coluna, coluna_titulo, coluna_ordem, fase_titulo,
+piece_status, piece_alerta, protocolo, agente_nome, cargo, paused, closed_reason, closed_kind,
+horas_na_fase`), `ui_move_to_column(p_lead, p_coluna, p_reason)`, `phase_label(phase)`,
+`piece_review_checklist()` (7 itens), `ui_review_piece(p_piece, p_checklist)`,
+`ui_approve_piece(p_piece, p_force)`, `ui_protocol_piece(p_piece, p_numero_processo)`,
+`ui_close_lead(p_lead, p_reason, p_kind)` (`perdido|inviavel|outro`), `ui_reopen_lead(p_lead)` (sem
+fase = volta para a anterior), `cpf_valido(text)`. `pieces` ganhou `versao, qualidade,
+resumo_executivo, documentos_anexar, docx_url, revisao_checklist, aprovada_em, aprovada_por`.
+`offices` ganhou `instagram, facebook, linkedin, seguidores_instagram, whatsapp_juridico,
+descricao_comercial`. `piece_templates` e `piece_models` NÃO aparecem mais para o escritório.
+
+**Faça.**
+1. **Fluxo de Trabalho (`/casos`)**: o kanban passa a ter as 7 colunas de `workflow_columns()`,
+   nesta ordem e com estas cores de cabeçalho: Closer (roxo), Entrevista (azul), Viabilidade
+   (verde), Coleta de docs (verde-água), Saneamento (âmbar), Revisão (terracota), Peça (cinza-azul).
+   Dados de `v_workflow_cards`; card na coluna `coluna`. Card: nome, telefone, "empresa · cargo",
+   linha "Agente: {agente_nome}", chips faixa (LOW/MID/HIGH TICKET), alerta amarelo quando
+   `piece_alerta`, "há N h/dias" (`horas_na_fase`). Arrastar chama `ui_move_to_column`; soltar em
+   Saneamento ou Revisão pergunta o alerta (opcional). O seletor de fase do modal mostra
+   `phase_label`. A lista (`Kanban | Lista`) ganha a coluna "Etapa" com `coluna_titulo`.
+   Encerrados não aparecem no quadro (ficam em Finalizados).
+2. **Cabeçalho do caso, botões por etapa** (substitui os fixos do Prompt 11):
+   - Coluna Closer/Entrevista/Viabilidade/Coleta: **Encerrar** (diálogo: tipo Perdido |
+     Inviável | Outro + motivo) e **Pausar**.
+   - Saneamento/Revisão: **Próximo passo ▾** com três itens: "Aprovar peça · segue para
+     protocolo" (abre o modal Revisão da peça), "Devolver para saneamento · peça segue viva; abre
+     tarefa" (`ui_set_piece_status(..., 'saneamento', alerta)` e `request_intervention` via
+     `log_intervention_action`? não: apenas o status + alerta), "Encerrar caso · exige motivo;
+     define perdido ou inviável". Ao lado, **Aguardar cliente** (`ui_set_piece_status(...,
+     'aguardando')`).
+   - Peça aprovada: botão **Protocolar** (modal "Marcar como protocolada": Número do processo com
+     placeholder `0001234-56.2026.8.26.0100`, texto "Após confirmar, a peça vira protocolada";
+     `ui_protocol_piece`).
+   - Sempre: Pegar, Drive, Arquivo, fechar.
+3. **Modal "Revisão da peça"**: título, "Petição {8 primeiros chars do id}", chips "Qualidade:
+   {qualidade}" e "Aguardando revisão"; bloco "Detalhes processuais" (valor da causa, versão
+   "v{versao}", qualidade, tipo principal = tese, status, criada em); "Checklist de revisão (7
+   itens)" de `piece_review_checklist()` com caixas ligadas a `revisao_checklist` (cada clique
+   salva com `ui_review_piece`); "Revisor responsável" (nome de `responsavel` ou "Reivindique o
+   lead no header para se tornar o revisor responsável"); botão **Aprovar peça** (desabilitado até
+   as 7 caixas; `ui_approve_piece`).
+4. **Aba Petição**: cabeçalho "Petição" com contador, botões **Devolver para saneamento** e
+   **Cadastrar peça manual**. Card da peça: status e data, "N campos", **Sincronizar** (chama a
+   RPC `piece_sync` via n8n no futuro; por ora desabilitado com tooltip "em breve"), **Baixar
+   DOCX** (gera do `content` com a lib `docx`), lápis para editar. Linhas: Criado em, Aprovada em,
+   Aprovada por, Revisão aprovada (SIM/NÃO), Protocolada em, Nº do processo, Status, Valor da
+   causa, Qualidade caso, Conteúdo Docx Url (link, se houver), **Resumo executivo** (caixa com
+   "Expandir (N caracteres)" e "Copiar"), **Documentos a anexar** (lista de itens de
+   `documentos_anexar`).
+5. **Empresa**: no card Identificação, seção **Presença digital**: site, Instagram, Facebook,
+   LinkedIn, seguidores no Instagram, descrição comercial. No card Contato: **WhatsApp do
+   jurídico** com a ajuda "Número que o agente informa para quem pergunta andamento de processo".
+6. **Configurações**: remova a aba Modelos para usuários do escritório (só quem tem linha em
+   `platform_admins` a vê, e nela edita `piece_templates`: nome, código, conteúdo, ativo,
+   obrigatório, sem botão de baixar).
+7. **Finalizados**: filtro "Perdidos | Inviáveis | Todos" por `closed_kind`, coluna Motivo e
+   botão "Reabrir" (volta para a fase anterior automaticamente).
+8. **Dados**: ao editar CPF, valide com `cpf_valido` antes de salvar e mostre "CPF inválido".
+
+**Não faça.** Não mude `pieces.status` ou `leads.phase` com `update`; só pelas RPCs. Não exiba
+`piece_templates` nem `agent_prompts` para o escritório.
+
+**Critério de aceite.** Com o seed, o quadro mostra as 7 colunas com cards em Closer,
+Entrevista, Viabilidade, Coleta de docs e Peça. Arrastar um card de Entrevista para Viabilidade
+grava "Entrevista → Viabilidade" no Histórico com o nome do usuário. Num caso em Revisão, marcar
+os 7 itens e aprovar move o card para Peça e habilita Protocolar; informar o número protocola.
+Encerrar como Inviável aparece em Finalizados no filtro Inviáveis; Reabrir devolve o caso para
+a coluna de onde saiu.

@@ -71,7 +71,7 @@ begin
   assert (j->'etapas'->0->>'n')::int = 60 and (j->'etapas'->0->>'pct_topo')::int = 100, 'jornada: recepção = todos';
   assert (j->'etapas'->0->>'concluido')::int + (j->'etapas'->0->>'em_fluxo')::int <= 60, 'jornada: concluído + em fluxo <= n';
   assert (j->'etapas'->0->>'concluido')::int > 0, 'jornada: recepção tem concluídos';
-  assert (j->'etapas'->5->>'n')::int >= (f->>'contratos')::int, 'jornada: briefing >= contratos';
+  assert (j->'etapas'->3->>'n')::int >= (f->>'contratos')::int, 'jornada: entrevista (4ª etapa na ordem 013) >= contratos';
   assert (select count(*) from public.dashboard_jornada_leads_p('cccccccc-cccc-cccc-cccc-cccccccccccc', 'recepcao')) = 60, 'jornada_leads: recepção lista todos';
 
   p := public.dashboard_produtividade_p('cccccccc-cccc-cccc-cccc-cccccccccccc');

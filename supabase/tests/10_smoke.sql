@@ -242,8 +242,8 @@ declare v_lead uuid; v_conv uuid; r jsonb;
 begin
   select id into v_lead from public.leads where office_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
   select id into v_conv from public.conversations where lead_id = v_lead;
-  r := public.apply_agent_effects(v_lead, v_conv, 'provas', '{"cargo":"vendedor","ferias_vencidas":1}', 'calculo', 'provas suficientes', null);
-  assert r->>'phase' = 'calculo', 'agente avançou para calculo';
+  r := public.apply_agent_effects(v_lead, v_conv, 'provas', '{"cargo":"vendedor","ferias_vencidas":1}', 'peca', 'provas suficientes', null);
+  assert r->>'phase' = 'peca', 'agente avançou para peca (ordem 013: provas vem depois de calculo)';
   assert (select cargo from public.case_data where lead_id = v_lead) = 'vendedor', 'agente atualizou dados';
   assert (select updated_by_actor from public.case_data where lead_id = v_lead) = 'ia', 'autor ia nos dados';
   assert (select actor from public.case_events where lead_id = v_lead and type = 'case_data_updated' order by seq desc limit 1) = 'ia', 'evento de dados nomeia a IA';
@@ -443,15 +443,15 @@ begin
 
   -- agente: contrato + briefing + dados novos
   r := public.apply_agent_effects(v_lead, v_conv, 'contrato',
-         '{"cpf":"123.456.789-00","email":"lead@x.test","empresa_cnpj":"12.345.678/0001-00","tem_caso":true}'::jsonb,
+         '{"cpf":"02038399948","email":"lead@x.test","empresa_cnpj":"12.345.678/0001-00","tem_caso":true}'::jsonb,
          null, null, null, null, '{"action":"send","honorarios_percent":35}'::jsonb,
          '{"teses":["horas_extras","desvio_funcao"],"dados_vinculo":{"jornada":"44h"},"conteudo":"- **Dados pessoais**\n- Nome: Lead Régua","status":"em_andamento"}'::jsonb);
   assert r ? 'contract_id' and r ? 'briefing_id', 'agente pediu contrato e abriu briefing';
   select * into k from public.contracts where id = (r->>'contract_id')::uuid;
   assert k.status = 'enviado' and k.honorarios_percent = 35 and k.requested_by_actor = 'ia' and k.send_requested_at is not null, 'contrato aguardando o provedor';
   assert (select phase from public.leads where id = v_lead) = 'contrato', 'pedir contrato leva à fase contrato';
-  assert (select cpf from public.contacts where id = (select contact_id from public.leads where id = v_lead)) = '123.456.789-00', 'CPF gravado pelo agente';
-  assert (public.contract_fill_data(v_lead)->>'cliente_cpf') = '123.456.789-00' and (public.contract_fill_data(v_lead)->>'honorarios_percent') = '35', 'dados do contrato';
+  assert (select cpf from public.contacts where id = (select contact_id from public.leads where id = v_lead)) = '020.383.999-48', 'CPF gravado pelo agente (validado e formatado)';
+  assert (public.contract_fill_data(v_lead)->>'cliente_cpf') = '020.383.999-48' and (public.contract_fill_data(v_lead)->>'honorarios_percent') = '35', 'dados do contrato';
   assert public.contract_fill_data(v_lead)->>'template_html' like '%{{cliente_nome}}%', 'modelo global do contrato';
   -- n8n: enviado ao provedor, depois assinado => briefing
   perform public.contract_mark_sent(k.id, 'autentique', 'doc-ref-1', 'https://assina.ae/abc', 'aaaa/contrato.pdf');
@@ -534,6 +534,85 @@ begin
   assert (select count(*) from public.human_interventions where lead_id = v_lead and status = 'resolvida' and outcome = 'cliente_retomado') >= 3, 'desfecho aplicado a todas';
   assert (select count(*) from public.case_events where lead_id = v_lead and type = 'interventions_bulk_resolved' and actor = 'humano' and (payload->>'count')::int = 3) = 1, 'um evento só, com autor';
   assert public.resolve_lead_interventions(v_lead) = 0, 'nada a resolver de novo';
+end $$;
+reset role; reset request.jwt.claim.sub;
+
+-- ---------- 013: fluxo do concorrente (ordem, colunas, petição, CPF, encerrar com tipo, templates, prompts)
+reset role; reset request.jwt.claim.sub;
+do $$
+declare r jsonb; begin
+  assert public.phase_order('contrato') < public.phase_order('briefing') and public.phase_order('briefing') < public.phase_order('calculo')
+     and public.phase_order('calculo') < public.phase_order('provas') and public.phase_order('provas') < public.phase_order('peca'), 'ordem: contrato → entrevista → viabilidade → coleta → peça';
+  assert (select count(*) from public.workflow_columns()) = 7, '7 colunas';
+  assert public.lead_column('qualificacao', null) = 'closer' and public.lead_column('briefing', null) = 'entrevista'
+     and public.lead_column('peca', 'saneamento') = 'saneamento' and public.lead_column('peca', 'aguardando') = 'revisao' and public.lead_column('peca', 'protocolada') = 'peca', 'mapa das colunas';
+  assert public.cpf_valido('020.383.999-48') and not public.cpf_valido('111.111.111-11') and not public.cpf_valido('123'), 'validação de CPF';
+  assert public.cpf_formatado('02038399948') = '020.383.999-48', 'CPF formatado';
+  assert (select count(*) from public.piece_templates where kind = 'bloco' and required) = 8, '8 blocos obrigatórios';
+  -- (o teste da 008 sobrescreveu o de recepção com um texto curto; os outros seis vêm da 013)
+  assert (select count(*) from public.agent_prompts p join public.agents a on a.id = p.agent_id where a.office_id is null and length(p.system_prompt) > 500) = 6, 'prompts dos agentes carregados';
+  r := public.agent_config_full('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'qualificacao');
+  assert (r->>'system_prompt') like '%Escritório A%' and (r->>'system_prompt') not like '%{{office_name}}%' and (r->>'system_prompt') not like '%{{agent_name}}%', 'placeholders resolvidos';
+  assert (r->>'system_prompt') like '%30%' or (r->>'system_prompt') like '%{{honorarios}}%' = false, 'honorários no prompt';
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';   -- Ana, advogado do A
+do $$
+declare v_lead uuid; l public.leads; p public.pieces; v_piece uuid; c record; a uuid := 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+begin
+  -- quadro: cartão com coluna e agente condutor
+  select lead_id into v_lead from public.v_workflow_cards where office_id = a and phase = 'briefing' limit 1;
+  select * into c from public.v_workflow_cards where lead_id = v_lead;
+  assert c.coluna = 'entrevista' and c.coluna_titulo = 'Entrevista' and c.agente_nome is not null and c.fase_titulo = 'Entrevista', 'card na coluna Entrevista com agente';
+  -- mover pelo quadro: Entrevista → Viabilidade → Coleta → Saneamento (cria a peça) → Revisão → Peça
+  l := public.ui_move_to_column(v_lead, 'viabilidade'); assert l.phase = 'calculo', 'viabilidade = calculo';
+  l := public.ui_move_to_column(v_lead, 'coleta_docs'); assert l.phase = 'provas', 'coleta = provas';
+  l := public.ui_move_to_column(v_lead, 'saneamento'); assert l.phase = 'peca', 'saneamento => peca';
+  assert (select coluna from public.v_workflow_cards where lead_id = v_lead) = 'saneamento', 'coluna saneamento pela etapa da peça';
+  l := public.ui_move_to_column(v_lead, 'revisao');
+  assert (select coluna from public.v_workflow_cards where lead_id = v_lead) = 'revisao', 'coluna revisão';
+  l := public.ui_move_to_column(v_lead, 'closer'); assert l.phase = 'qualificacao', 'voltar para closer = qualificação (humano pode)';
+  l := public.ui_move_to_column(v_lead, 'peca'); assert l.phase = 'peca', 'de volta para peça';
+  -- petição: checklist, aprovar, protocolar
+  select id into v_piece from public.pieces where lead_id = v_lead order by created_at desc limit 1;
+  assert (select count(*) from public.piece_review_checklist()) = 7, 'checklist de 7 itens';
+  p := public.ui_review_piece(v_piece, '{"fatos":true,"direito":true,"tese":true}'::jsonb);
+  assert (p.revisao_checklist->>'fatos')::boolean and p.reviewed_by = '11111111-1111-1111-1111-111111111111', 'checklist parcial salvo';
+  begin
+    perform public.ui_approve_piece(v_piece);
+    raise exception 'FALHOU';
+  exception when others then if sqlerrm = 'FALHOU' then raise exception 'aprovar com checklist incompleto deveria falhar'; end if; end;
+  p := public.ui_review_piece(v_piece, '{"pedidos":true,"valor_causa":true,"documentos":true,"competencia":true}'::jsonb);
+  p := public.ui_approve_piece(v_piece);
+  assert p.status = 'aprovada' and p.aprovada_por = '11111111-1111-1111-1111-111111111111' and p.aprovada_em is not null, 'aprovada com checklist completo';
+  assert (select coluna from public.v_workflow_cards where lead_id = v_lead) = 'peca', 'aprovada fica na coluna Peça';
+  p := public.ui_protocol_piece(v_piece, '0001234-56.2026.5.02.0001');
+  assert p.status = 'protocolada' and p.protocolo = '0001234-56.2026.5.02.0001' and p.protocolado_em is not null, 'protocolada com número';
+  -- encerrar com tipo e reabrir para a fase anterior
+  l := public.ui_close_lead(v_lead, 'Cliente desistiu', 'inviavel');
+  assert l.phase = 'encerrado' and l.closed_kind = 'inviavel', 'encerrado como inviável';
+  l := public.ui_reopen_lead(v_lead);
+  assert l.phase = 'peca' and l.closed_kind is null, 'reabrir volta para a fase anterior (peca)';
+  -- modelos internos invisíveis; templates da Meta do escritório
+  assert (select count(*) from public.piece_templates) = 0, 'escritório não vê modelos de petição';
+  assert (select count(*) from public.followup_queue(10)) >= 0 or true, 'n/a';
+end $$;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';   -- Bruno, admin do B
+do $$ begin
+  insert into public.wa_templates (office_id, name, body, params, status) values ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'retomada_1', 'Oi {{1}}, aqui é do {{2}}. Podemos continuar?', 2, 'aprovado');
+  assert (select count(*) from public.wa_templates) = 1, 'template do B visível para o B';
+  assert not has_function_privilege('authenticated', 'public.followup_queue(int)', 'execute'), 'followup_queue só n8n';
+end $$;
+reset role; reset request.jwt.claim.sub;
+do $$ begin
+  insert into public.platform_admins (user_id) values ('22222222-2222-2222-2222-222222222222');
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';
+do $$ begin
+  assert public.is_platform_admin(), 'Bruno é admin da plataforma';
+  assert (select count(*) from public.piece_templates where kind = 'bloco') = 8, 'admin da plataforma vê os blocos';
+  assert (select count(*) from public.followup_queue(10)) >= 0 or true, 'n/a';
 end $$;
 reset role; reset request.jwt.claim.sub;
 

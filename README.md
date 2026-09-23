@@ -26,10 +26,11 @@ Vault) + n8n + WhatsApp Cloud API.
 | Sprint 3 — Jurídico como esteira (Revisão, Aguardando, Saneamento, Pronto p/ protocolo, Protocolado) com alerta e responsável, agenda por dia com tarefas do agente, limpeza do linter (search_path, execução só authenticated/service_role) | `supabase/010_juridico_agenda.sql` | Aplicada e testada |
 | Sprint 4 — caso completo: CPF/endereço, CNPJ/objeções, encerrar com motivo, pausa, supervisor/protocolador, Drive, ações da intervenção, contrato com assinatura eletrônica (Autentique via n8n), briefing estruturado, régua de follow-up | `supabase/011_caso_completo.sql` + `n8n/05_contract_signature.json` + `n8n/06_followup.json` | Aplicada e testada; n8n JSON válido |
 | Sprint 4 — fila por lead e conclusão em lote (`v_intervention_leads`, `resolve_lead_interventions`) | `supabase/012_fila_por_lead.sql` | Aplicada e testada |
-| Sprint 3/4 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos, Configurações, Marketing, caso completo, fila por lead | `lovable/PROMPT-v3.md` | 12 prompts |
+| Sprint 4 — fluxo do concorrente: contrato antes de cálculo/provas, quadro de 7 colunas, Petição com checklist/aprovação/protocolo, modelos internos (platform_admins), presença digital e WhatsApp do jurídico, encerrar com tipo, templates da Meta, CPF validado, prompts dos 7 agentes, áudio transcrito | `supabase/013_fluxo_laquila.sql` + n8n 02/03/06 | Aplicada e testada |
+| Sprint 3/4 — prompts de paridade: navegação, identidade, dashboard, Clientes, Finalizados, Histórico, Jurídico, Agendamentos, Configurações, Marketing, caso completo, fila por lead, fluxo do concorrente | `lovable/PROMPT-v3.md` | 13 prompts |
 | Dados de demonstração (60 leads no mês, contratos, custos, empresa, integrações, 47 modelos) | `supabase/seed_demo.sql` | Testado; reversível |
 
-"Aplicada e testada" = `supabase/tests/run.sh` roda 001→012 duas vezes num PostgreSQL 16 limpo
+"Aplicada e testada" = `supabase/tests/run.sh` roda 001→013 duas vezes num PostgreSQL 16 limpo
 (idempotência) e passa dois testes: o smoke (ingestão idempotente, isolamento entre escritórios para
 leads, mensagens, tarefas, eventos e `lead_dossier`, trava do takeover, fase com autor, portão,
 prescrição, fila, efeitos do agente, integrações com Vault, modelos, prompts invisíveis) e o de dashboard
@@ -39,7 +40,9 @@ prescrição, fila, efeitos do agente, integrações com Vault, modelos, prompts
 
 - A trava do takeover mora no banco (`conversations.ai_paused` + `ai_should_reply()`), nunca na UI.
 - Nenhuma mensagem vai para o WhatsApp sem virar linha em `messages` primeiro.
-- A fase é uma coluna só (`leads.phase`). Kanban, lista, funil e dashboard são projeções.
+- A fase é uma coluna só (`leads.phase`). Kanban, lista, funil e dashboard são projeções. Ordem (013):
+  Closer (novo, triagem, qualificacao, contrato) → Entrevista (briefing) → Viabilidade (calculo) →
+  Coleta de docs (provas) → Peça (peca; Saneamento/Revisão/Peça pela etapa da peça).
 - Todo evento nomeia o autor (`case_events.actor`; `leads.closed_by`).
 - Segredo não vai para tabela: token no Vault, no schema só o nome da referência. O cliente grava
   por `set_integration()` e nunca lê de volta; só o n8n (service_role) resolve o valor.
@@ -50,10 +53,10 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
 
 ## Como aplicar no Supabase
 
-1. SQL Editor: colar `supabase/apply_all.sql` (001..012 juntas) e executar. Ou rodar
+1. SQL Editor: colar `supabase/apply_all.sql` (001..013 juntas) e executar. Ou rodar
    `001_schema.sql`, `002_dominio_juridico.sql`, `003_caso_unico.sql`, `004_dashboard.sql`,
    `005_funil.sql`, `006_dashboard_periodo.sql`, `007_fila.sql`, `008_configuracoes.sql`,
-   `009_marketing.sql`, `010_juridico_agenda.sql`, `011_caso_completo.sql` e `012_fila_por_lead.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
+   `009_marketing.sql`, `010_juridico_agenda.sql`, `011_caso_completo.sql`, `012_fila_por_lead.sql` e `013_fluxo_laquila.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
    das individuais (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
    Opcional: `seed_demo.sql` cria 60 leads de demonstração (reversível pelo bloco LIMPEZA).
 2. Token da Meta: pelo painel, Configurações → Integrações → WhatsApp Cloud API (Meta), que chama
@@ -89,7 +92,7 @@ Saída esperada termina em `SMOKE OK`.
 
 ```
 docs/       blueprint e recalibragem do backlog
-supabase/   migrations 001..012, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard)
+supabase/   migrations 001..013, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard)
 n8n/        seis workflows exportados (verificação, inbound com agente, envio manual, importação de custos, contrato/assinatura, régua de follow-up)
 lovable/    prompts de build v1 (monitor), v2 (caso único) e v3 (paridade e dashboard)
 ```
@@ -98,4 +101,4 @@ lovable/    prompts de build v1 (monitor), v2 (caso único) e v3 (paridade e das
 
 - Nome e domínio do produto.
 - Modelo de cobrança (escritório, usuário ou volume).
-- Conteúdo de `agent_prompts.system_prompt` dos sete agentes (por SQL, com service_role; não há tela).
+- Prompts dos sete agentes: versão 1 carregada pela 013 a partir do roteiro real do concorrente; ajustar tom por escritório.
