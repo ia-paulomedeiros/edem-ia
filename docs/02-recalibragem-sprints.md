@@ -41,7 +41,7 @@ Personalizado) e por agente/usuário; "Limpar tudo". Cinco abas:
 | Desfecho da intervenção (por forma) | `human_interventions.outcome` (006) | 006 |
 | Protocolos | `pieces.protocolado_em` (006) | 006 |
 | Fluxo de Trabalho | `/casos` (kanban + lista sobre `v_case_cards`) | `PROMPT-v2` |
-| Intervenção humana | `/fila` sobre `human_interventions` | `PROMPT-v1` |
+| Intervenção humana (por tarefa e por lead, concluir lead em lote) | `/fila` sobre `v_intervention_cards` e `v_intervention_leads` (012) | `PROMPT-v1` + Prompt 12 |
 | Jurídico (esteira: Revisão, Aguardando, Saneamento, Pronto p/ protocolo, Protocolado) | `pieces.status` + `alerta` + `responsavel`, `v_legal_cards`, `ui_set_piece_status` (010) | 010; UI em `PROMPT-v3` Prompt 9 |
 | Configurações (Meu perfil, Empresa, Integrações, Modelos de petição) | `offices` cadastral, `integrations` + Vault, `piece_models` + bucket `modelos` (008) | 008; UI em `PROMPT-v3` Prompt 7 |
 | Agendamentos (agenda por dia, retornos marcados pela IA) | `v_tasks`, `apply_agent_effects(p_task)` (010) | 010; UI em `PROMPT-v3` Prompt 9 |

@@ -208,7 +208,8 @@ begin
   assert h.status = 'pendente', 'na fila';
   assert not public.ai_should_reply(v_conv), 'IA cala com intervenção aberta';
   assert (select intervencao_pendente from public.v_case_cards where lead_id = v_lead), 'card mostra fila';
-  assert (public.request_intervention(v_lead, v_conv, 'outro', 'de novo')).id = h.id, 'não duplica';
+  assert (public.request_intervention(v_lead, v_conv, 'duvida_juridica', 'de novo')).id = h.id, 'não duplica a mesma categoria';
+  assert (public.request_intervention(v_lead, v_conv, 'outro', 'outra tarefa')).id <> h.id, 'categoria diferente vira outra tarefa (012)';
 end $$;
 
 set role authenticated;
@@ -216,7 +217,7 @@ set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
 do $$
 declare h public.human_interventions; v_conv uuid;
 begin
-  select * into h from public.human_interventions;
+  select * into h from public.human_interventions where category = 'duvida_juridica';
   h := public.claim_intervention(h.id);
   assert h.status = 'em_atendimento' and h.claimed_by = '11111111-1111-1111-1111-111111111111', 'assumiu';
   h := public.assign_intervention(h.id, null);
@@ -229,7 +230,9 @@ begin
   h := public.resolve_intervention(h.id, 'Expliquei e seguimos', true);
   assert h.status = 'resolvida', 'resolvida';
   select id into v_conv from public.conversations;
-  assert public.ai_should_reply(v_conv), 'IA liberada ao resolver';
+  assert not public.ai_should_reply(v_conv), 'ainda há outra tarefa aberta: IA continua calada';
+  assert public.resolve_lead_interventions(h.lead_id, 'Fechei a outra também') = 1, 'concluir lead fecha a que sobrou';
+  assert public.ai_should_reply(v_conv), 'IA liberada quando a última tarefa é resolvida';
 end $$;
 reset role; reset request.jwt.claim.sub;
 
@@ -502,6 +505,35 @@ begin
   assert not has_function_privilege('authenticated', 'public.contract_mark_signed(text,text,timestamptz)', 'execute'), 'contract_mark_signed bloqueada';
   assert (select count(*) from public.followup_rules) = 3, 'regras globais visíveis';
   assert (select count(*) from public.contract_templates) = 1, 'modelo global visível';
+end $$;
+reset role; reset request.jwt.claim.sub;
+
+-- ---------- 012: fila por lead e conclusão em lote
+reset role; reset request.jwt.claim.sub;
+do $$
+declare v_lead uuid; v_conv uuid;
+begin
+  select l.id, c.id into v_lead, v_conv from public.leads l join public.conversations c on c.lead_id = l.id
+   where l.office_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and l.phase = 'briefing' limit 1;
+  perform public.request_intervention(v_lead, v_conv, 'caso_parado', 'Caso parado >48h', 2, 'sistema', null, null, array['fragil']);
+  perform public.request_intervention(v_lead, v_conv, 'contrato_nao_assinado_24h', 'Contrato pendente >24h', 1, 'ia', 'contrato', 'Cobrar assinatura', '{}'::text[]);
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+do $$
+declare r record; n int; v_lead uuid;
+begin
+  select lead_id into v_lead from public.v_intervention_leads where office_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' order by pendencias desc limit 1;
+  select * into r from public.v_intervention_leads where lead_id = v_lead;
+  assert r.pendencias = 3 and r.priority = 1, 'card por lead: 3 pendências, prioridade mais alta P1 (' || r.pendencias || '/' || r.priority || ')';
+  assert 'fragil' = any (r.tags) and array_length(r.grupos, 1) >= 2, 'tags e grupos agregados';
+  assert r.em_atendimento = 1, 'uma já em atendimento (registrou ação antes)';
+  n := public.resolve_lead_interventions(v_lead, 'Cliente retomou o atendimento', true, 'cliente_retomado');
+  assert n = 3, 'concluir lead resolveu 3';
+  assert (select count(*) from public.v_intervention_leads where lead_id = v_lead) = 0, 'sumiu da visão por lead';
+  assert (select count(*) from public.human_interventions where lead_id = v_lead and status = 'resolvida' and outcome = 'cliente_retomado') >= 3, 'desfecho aplicado a todas';
+  assert (select count(*) from public.case_events where lead_id = v_lead and type = 'interventions_bulk_resolved' and actor = 'humano' and (payload->>'count')::int = 3) = 1, 'um evento só, com autor';
+  assert public.resolve_lead_interventions(v_lead) = 0, 'nada a resolver de novo';
 end $$;
 reset role; reset request.jwt.claim.sub;
 

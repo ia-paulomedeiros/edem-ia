@@ -655,3 +655,44 @@ resumo e a aba Tarefa com o registro de ação; registrar uma ligação com resu
 fechar" e 25 caracteres de nota aparece no Histórico de ações e no Histórico do caso com o seu
 nome, e o contador de ligações da fila sobe. "Enviar contrato" muda a fase para Contrato e o card
 mostra "enviado"; encerrar com motivo mostra a faixa rosa com o texto e o seu nome.
+
+---
+
+## Prompt 12 — Fila: visão "Por lead" e "Concluir lead" (resolução em lote)
+
+**Pré-requisito.** `supabase/012_fila_por_lead.sql` aplicada e tipos regenerados. Ela cria
+`v_intervention_leads` (um card por lead com pendências abertas: `lead_id, priority` (a mais
+urgente), `pendencias, em_atendimento, categorias, grupos, tags, titulos, mais_antiga_em, dias,
+ligacoes, claimed_by, responsavel_nome, contact_name, contact_phone, phase, paused, faixa,
+verbas_total, prescricao_em, em_atendimento_humano`) e `resolve_lead_interventions(p_lead,
+p_resolution, p_release_ai, p_outcome)` → número de pendências resolvidas.
+
+**Faça.**
+1. Em `/fila`, no canto superior direito, um alternador **Por tarefa | Por lead** (lembrar a
+   escolha em `localStorage`). "Por tarefa" é o quadro atual, sem mudanças.
+2. **Por lead**: quatro colunas por prioridade, com cabeçalho colorido e contador: **P1 Urgente**
+   (vermelho), **P2 Alta** (laranja), **P3 Normal** (azul), **P4 Baixa** (cinza). Um card por
+   linha de `v_intervention_leads`, na coluna da `priority`. Card: nome em negrito, "há N dias"
+   à direita, telefone, linha "**N tarefas abertas**" (singular quando 1) em destaque, chips dos
+   `grupos` (até 3, "+N"), `tags` (Frágil em âmbar), chip "Em atendimento" quando
+   `em_atendimento_humano`, faixa e responsável (avatar) quando houver. Ordenar por `dias` desc.
+   Mesma busca e filtros da visão por tarefa (responsável, grupo, tags). Realtime em
+   `human_interventions` refaz a lista.
+3. Clicar no card abre o modal do caso **na aba Tarefa**, que passa a listar **todas** as
+   pendências abertas do lead (não só a mais recente), cada uma como um bloco recolhível com:
+   título, prioridade, grupo, "Instruções para solucionar" (`note`), Histórico de ações e o
+   formulário Registrar ação (Prompt 11). No rodapé da aba, botão verde **Concluir lead (N
+   pendências)**: diálogo com Desfecho (select dos `outcome` existentes: sanado, cliente perdido,
+   follow-up agendado, cliente retomado, reativado para o agente, assumido pelo humano, outro),
+   Resolução (texto, opcional, padrão "Concluído em lote") e a caixa "Devolver a conversa para
+   a IA" (marcada por padrão) → `resolve_lead_interventions`. Toast "N pendências resolvidas" e o
+   modal volta para a aba Histórico, que mostra o evento "Concluiu N pendências" com o seu nome.
+   Na visão "Por tarefa", cada card continua sendo resolvido individualmente.
+4. Contador do menu "Intervenção humana" não muda (continua contando tarefas).
+
+**Não faça.** Não resolva em lote no front com N chamadas a `resolve_intervention`: é uma chamada
+só, para o Histórico ter um evento único.
+
+**Critério de aceite.** Com o seed, a visão "Por lead" mostra leads com "2 tarefas abertas" ou
+mais. Abrir um deles e clicar em "Concluir lead (2 pendências)" tira o card das duas visões e o
+Histórico do caso ganha um único evento com o seu nome e o desfecho escolhido.
