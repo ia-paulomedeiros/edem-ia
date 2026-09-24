@@ -148,7 +148,14 @@ begin
         update public.pieces set status = v_etapa where lead_id = v_lead;
       end if;
       update public.pieces set stage_changed_at = now() - (random() * interval '20 days'),
-             alerta = case when random() < 0.15 then (array['Confirmar com o cliente antes de protocolar','Aguardando CTPS digital do cliente','Revisor pediu prova do PIX'])[1 + (random()*2)::int] else null end
+             alerta = case when random() < 0.15 then (array['Confirmar com o cliente antes de protocolar','Aguardando CTPS digital do cliente','Revisor pediu prova do PIX'])[1 + (random()*2)::int] else null end,
+             qualidade = case when i % 4 = 0 then 'fragil' else 'viavel' end,
+             versao = 1 + (i % 2),
+             resumo_executivo = 'RESUMO EXECUTIVO — CASO ' || upper(v_nome) || E'\n\nVALOR TOTAL DA CAUSA: R$ ' || to_char(v_salario * 8, 'FM999G999G990D00') ||
+               E'\n\nCLASSIFICAÇÃO GERAL DA PEÇA: ' || case when i % 4 = 0 then 'FRÁGIL' else 'VIÁVEL' end ||
+               E'\nTeses: verbas rescisórias não pagas; horas extras além da 44ª semanal. Provas: CTPS digital e holerites recebidos; testemunha indicada. Risco: ' ||
+               case when i % 4 = 0 then 'depende de prova testemunhal sem documentos de jornada.' else 'baixo; documentos consistentes com o relato.' end,
+             documentos_anexar = '["Procuração ad judicia","Declaração de hipossuficiência econômica","CTPS digital (PDF)","Holerites dos últimos 12 meses","Comprovante de residência"]'::jsonb
        where lead_id = v_lead;
     end if;
 
