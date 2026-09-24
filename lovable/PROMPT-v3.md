@@ -737,7 +737,11 @@ descricao_comercial`. `piece_templates` e `piece_models` NÃO aparecem mais para
    - Peça aprovada: botão **Protocolar** (modal "Marcar como protocolada": Número do processo com
      placeholder `0001234-56.2026.8.26.0100`, texto "Após confirmar, a peça vira protocolada";
      `ui_protocol_piece`).
-   - Sempre: Pegar, Drive, Arquivo, fechar.
+   - Sempre: **Pegar** (depois de reivindicado vira o chip "Pego por {nome}", clicável para
+     devolver), Drive, Arquivo, fechar. No cabeçalho, ao lado do nome do agente condutor, o chip da
+     faixa (LOW/MID/HIGH TICKET).
+   - Abrir um card pela página **Jurídico** abre o modal já na aba **Petição**; pela Fila, na aba
+     Tarefa; pelo Fluxo de Trabalho e demais, na aba Histórico.
 3. **Modal "Revisão da peça"**: título, "Petição {8 primeiros chars do id}", chips "Qualidade:
    {qualidade}" e "Aguardando revisão"; bloco "Detalhes processuais" (valor da causa, versão
    "v{versao}", qualidade, tipo principal = tese, status, criada em); "Checklist de revisão (7
