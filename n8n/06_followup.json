@@ -109,6 +109,28 @@
         600,
         0
       ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.followup_no_template($1::uuid) as regua;",
+        "options": {
+          "queryReplacement": "={{ $json.lead_id }}"
+        }
+      },
+      "name": "Sem template: encerrar régua e avisar a equipe",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        960,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
     }
   ],
   "connections": {
@@ -154,7 +176,13 @@
             "index": 0
           }
         ],
-        []
+        [
+          {
+            "node": "Sem template: encerrar régua e avisar a equipe",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
@@ -162,6 +190,6 @@
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "A cada 30 min lê followup_due(): leads que a IA respondeu e ficaram calados, não pausados, não assumidos pela equipe, sem intervenção aberta, com o próximo passo vencido. Para cada um grava uma mensagem do sistema (o WA 03 envia; não pausa a IA) e chama followup_mark_sent(): agenda o próximo passo pela regra do escritório (followup_rules: office_id nulo = padrão global de 3 passos: 4h, 24h, 72h) ou, no fim, abre a intervenção 'follow-up esgotado'. Qualquer resposta do lead zera a régua (trigger em messages). Nota: só service_role executa followup_due/followup_mark_sent. 013: usa followup_queue(); quando a última resposta do lead tem mais de 24h, a Meta só aceita template aprovado: a regra do passo aponta template_name (wa_templates, status aprovado) e a mensagem sai como template com {{1}}=nome, {{2}}=escritório. Sem template aprovado, o passo é pulado e nada é marcado."
+    "notes": "A cada 30 min lê followup_queue(): leads que a IA respondeu e ficaram calados, não pausados, não assumidos pela equipe, sem intervenção aberta, com o próximo passo vencido. Para cada um grava uma mensagem do sistema (o WA 03 envia; não pausa a IA) e chama followup_mark_sent(): agenda o próximo passo pela regra do escritório (followup_rules: office_id nulo = padrão global de 3 passos: 4h, 24h, 72h) ou, no fim, abre a intervenção 'follow-up esgotado'. Qualquer resposta do lead zera a régua (trigger em messages). Nota: só service_role executa followup_due/followup_mark_sent. 013: usa followup_queue(); quando a última resposta do lead tem mais de 24h, a Meta só aceita template aprovado: a regra do passo aponta template_name (wa_templates, status aprovado) e a mensagem sai como template com {{1}}=nome, {{2}}=escritório. Sem template aprovado com a janela fechada (014): chama followup_no_template(), que tira o lead da régua e abre 'follow_up_esgotado' (tag sem_template) para a equipe; antes o lead ficava vencido para sempre."
   }
 }

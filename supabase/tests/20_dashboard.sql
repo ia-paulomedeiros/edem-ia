@@ -48,7 +48,7 @@ begin
 
   j := public.dashboard_jornada('cccccccc-cccc-cccc-cccc-cccccccccccc');
   assert (j->>'primeira_resposta_min')::numeric between 0.5 and 2, 'jornada: primeira resposta ~1 min';
-  assert jsonb_array_length(j->'etapas') = 7, 'jornada: sete etapas por agente';
+  assert jsonb_array_length(j->'etapas') = 5, 'jornada: cinco etapas (014: Closer, Entrevistador, Coletor, Saneador, Redator)';
 
   p := public.dashboard_produtividade('cccccccc-cccc-cccc-cccc-cccccccccccc');
   assert jsonb_array_length(p->'membros') = 1, 'produtividade: 1 membro';
@@ -67,12 +67,15 @@ begin
   assert (g->'fechados'->>'periodo')::int = (g->'fechados'->>'hoje')::int, 'geral_p: hoje bate';
 
   j := public.dashboard_jornada_p('cccccccc-cccc-cccc-cccc-cccccccccccc');
-  assert jsonb_array_length(j->'etapas') = 7, 'jornada: 7 etapas';
-  assert (j->'etapas'->0->>'n')::int = 60 and (j->'etapas'->0->>'pct_topo')::int = 100, 'jornada: recepção = todos';
+  assert jsonb_array_length(j->'etapas') = 5, 'jornada: 5 etapas';
+  assert j->'etapas'->0->>'agente' = 'closer' and j->'etapas'->3->>'agente' = 'saneador' and j->'etapas'->4->>'agente' = 'redator', 'jornada: ordem da Láquila';
+  assert (j->'etapas'->0->>'n')::int = 60 and (j->'etapas'->0->>'pct_topo')::int = 100, 'jornada: Closer = todos';
   assert (j->'etapas'->0->>'concluido')::int + (j->'etapas'->0->>'em_fluxo')::int <= 60, 'jornada: concluído + em fluxo <= n';
-  assert (j->'etapas'->0->>'concluido')::int > 0, 'jornada: recepção tem concluídos';
-  assert (j->'etapas'->3->>'n')::int >= (f->>'contratos')::int, 'jornada: entrevista (4ª etapa na ordem 013) >= contratos';
-  assert (select count(*) from public.dashboard_jornada_leads_p('cccccccc-cccc-cccc-cccc-cccccccccccc', 'recepcao')) = 60, 'jornada_leads: recepção lista todos';
+  assert (j->'etapas'->0->>'concluido')::int > 0, 'jornada: Closer tem concluídos';
+  assert (j->'etapas'->1->>'n')::int >= (f->>'contratos')::int, 'jornada: Entrevistador (2ª etapa) >= contratos';
+  assert (j->'etapas'->3->>'n')::int <= (j->'etapas'->4->>'n')::int, 'jornada: Saneador é subconjunto do Redator';
+  assert (select count(*) from public.dashboard_jornada_leads_p('cccccccc-cccc-cccc-cccc-cccccccccccc', 'recepcao')) = 60, 'jornada_leads: papel de agente (recepcao) vira a etapa Closer';
+  assert (select count(*) from public.dashboard_jornada_leads_p('cccccccc-cccc-cccc-cccc-cccccccccccc', 'closer')) = 60, 'jornada_leads: closer lista todos';
 
   p := public.dashboard_produtividade_p('cccccccc-cccc-cccc-cccc-cccccccccccc');
   assert (p->>'concluidas')::int > 0, 'produtividade: concluídas > 0';

@@ -156,11 +156,14 @@ begin
   assert card.prescricao_vencida = false, 'não vencida';
   assert card.qualificado = true, 'card mostra qualificado';
 
-  -- apertar o vínculo mínimo reprova
+  -- apertar o vínculo mínimo reprova (014: por tipo de saída; a coluna antiga é ignorada)
   update public.office_params set vinculo_minimo_meses = 120 where office_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
   q := public.qualification_gate(v_lead, 'sistema');
+  assert q.passed, 'vinculo_minimo_meses (obsoleta) não reprova mais';
+  update public.office_params set vinculo_minimo = jsonb_set(vinculo_minimo, '{com_vinculo,demitido}', '120') where office_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  q := public.qualification_gate(v_lead, 'sistema');
   assert not q.passed and q.motivos[1] like 'vinculo_curto%', 'reprova por vínculo';
-  update public.office_params set vinculo_minimo_meses = 6 where office_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  update public.office_params set vinculo_minimo_meses = 6, vinculo_minimo = jsonb_set(vinculo_minimo, '{com_vinculo,demitido}', '0') where office_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
   -- alerta obedece office_params.alerta_prescricao_dias
   update public.office_params set alerta_prescricao_dias = 10 where office_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -550,7 +553,7 @@ declare r jsonb; begin
   assert public.cpf_formatado('02038399948') = '020.383.999-48', 'CPF formatado';
   assert (select count(*) from public.piece_templates where kind = 'bloco' and required) = 8, '8 blocos obrigatórios';
   -- (o teste da 008 sobrescreveu o de recepção com um texto curto; os outros seis vêm da 013)
-  assert (select count(*) from public.agent_prompts p join public.agents a on a.id = p.agent_id where a.office_id is null and length(p.system_prompt) > 500) = 6, 'prompts dos agentes carregados';
+  assert (select count(*) from public.agent_prompts p join public.agents a on a.id = p.agent_id where a.office_id is null and length(p.system_prompt) > 500) = 7, 'prompts dos agentes carregados (8 agentes; recepção sobrescrita acima)';
   r := public.agent_config_full('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'qualificacao');
   assert (r->>'system_prompt') like '%Escritório A%' and (r->>'system_prompt') not like '%{{office_name}}%' and (r->>'system_prompt') not like '%{{agent_name}}%', 'placeholders resolvidos';
   assert (r->>'system_prompt') like '%30%' or (r->>'system_prompt') like '%{{honorarios}}%' = false, 'honorários no prompt';

@@ -142,7 +142,7 @@ begin
       v_etapa := (array['revisao','revisao','revisao','revisao','revisao','revisao','aguardando','aguardando','saneamento','aprovada','protocolada','protocolada','protocolada'])[1 + (i % 13)];
       if v_etapa = 'protocolada' then
         update public.pieces set status = 'protocolada', protocolo = 'ATSum ' || (1000 + i)::text || '-2026',
-               protocolado_em = v_dia + interval '2 days' + time '11:00'
+               protocolado_em = least(v_dia + interval '2 days' + time '11:00', now() - interval '10 minutes')
          where lead_id = v_lead;
       else
         update public.pieces set status = v_etapa where lead_id = v_lead;
