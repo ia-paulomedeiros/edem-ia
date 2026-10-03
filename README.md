@@ -71,6 +71,9 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
    `009_marketing.sql`, `010_juridico_agenda.sql`, `011_caso_completo.sql`, `012_fila_por_lead.sql`, `013_fluxo_laquila.sql`, `014_paridade_regras.sql` e `015_paridade_automacoes.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
    das individuais (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
    Opcional: `seed_demo.sql` cria 60 leads de demonstração (reversível pelo bloco LIMPEZA).
+   Banco que já tem até a 013 (produção): aplicar a 014 e a 015 pelas partes de
+   `supabase/partes/` (014a..014e, 015a..015c, cada uma < 30 KB e terminando com um SELECT que
+   devolve `OK`) ou pelo psql com `supabase/tools/aplicar_partes.sh`. Ver `supabase/partes/LEIA-ME.md`.
 2. Token da Meta: pelo painel, Configurações → Integrações → WhatsApp Cloud API (Meta), que chama
    `set_integration()` e cria o segredo no Vault e o número em `whatsapp_numbers`. Alternativa manual:
    criar o segredo no Vault e cadastrar o número como abaixo.
@@ -109,6 +112,16 @@ supabase/tests/run.sh "-h localhost -p 5432 -U postgres"
 ```
 
 Saída esperada: `SMOKE OK`, `DASHBOARD OK` e `PARIDADE OK`.
+
+Upgrade como em produção (001..013 + seed da 013, depois as partes da 014/015 exigindo OK em cada
+uma, reaplicação e seed atual):
+
+```bash
+supabase/tests/run_upgrade.sh "-h localhost -p 5432 -U postgres"
+```
+
+As duas suítes passam em PostgreSQL 16 e 17.6 (a do Supabase). Ao mudar a 014 ou a 015, regenere as
+partes com `python3 supabase/tools/split_migrations.py` (o `run_upgrade.sh` falha se estiverem velhas).
 
 ## Estrutura
 

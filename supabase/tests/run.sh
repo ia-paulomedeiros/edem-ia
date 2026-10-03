@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Aplica 001..015 duas vezes (idempotência) num PostgreSQL 16 local e roda o smoke test.
+# Aplica 001..015 duas vezes (idempotência) num PostgreSQL 16 ou 17 local e roda os testes
+# (smoke, dashboard, paridade). Para o upgrade como em produção, veja run_upgrade.sh.
 # Uso: supabase/tests/run.sh [conninfo]   ex.: supabase/tests/run.sh "-h localhost -p 5432 -U postgres"
 # Não aponte para o Supabase de produção: o shim cria um schema auth de mentira.
 set -euo pipefail
