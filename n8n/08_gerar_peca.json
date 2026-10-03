@@ -1,0 +1,262 @@
+{
+  "name": "PECA 08 — Gerar a peça (blocos + teses)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "d0800000-0000-4000-8000-000000000001",
+      "name": "A cada 2 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from public.piece_generation_claim(3);",
+        "options": {}
+      },
+      "id": "d0800000-0000-4000-8000-000000000002",
+      "name": "Peças para gerar (marca como gerando)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ JSON.stringify({ hoje: $now.setZone('America/Sao_Paulo').toFormat('yyyy-MM-dd'), tese_principal: $json.tese, teses: $json.teses, blocos: $json.blocos, briefing: $json.briefing, qualificacao: $json.qualificacao, evidencias: $json.evidencias, case_data: $json.case_data, cliente: $json.contato, escritorio: $json.escritorio }) }}",
+        "options": {
+          "systemMessage": "Você é o Redator do escritório: advogado trabalhista brasileiro que redige petições iniciais na Justiça do Trabalho. Recebe os blocos internos do escritório, as teses do caso, a entrevista (briefing), a qualificação (verbas calculadas), as provas recebidas e os dados do cliente e do escritório.\n\nCOMO MONTAR\n- Estrutura: os blocos de kind \"bloco\" na ordem do campo \"ordem\" formam o esqueleto (cabeçalho, síntese do contrato, abertura dos pedidos, liquidação, conciliação, juízo digital, justiça gratuita, fechamento). Os blocos de kind \"tese\" trazem a fundamentação de cada tese: desenvolva cada tese presente com fatos do briefing, fundamentos legais e pedidos específicos, entre a síntese do contrato e a abertura dos pedidos.\n- Preencha todos os {{placeholders}} com os dados: cliente_nome, cliente_cpf, cliente_nacionalidade, cliente_estado_civil, cliente_endereco, cliente_email, cliente_telefone, empresa, empresa_cnpj, cargo, admissao, demissao, salario, tipo_rescisao, cidade (comarca: cidade do escritório se não houver outra), valor_causa (total da qualificação em R$), data_extenso (data de hoje por extenso), escritorio_oab. Dado que não existe: deixe [PREENCHER: o que falta] e liste em pendencias.\n- Pedidos liquidados (art. 840, § 1º, da CLT): cada pedido com o valor da qualificação. A soma é o valor da causa.\n- Não invente fatos, datas, testemunhas ou documentos. Cite só provas que estão em evidencias.\n- Linguagem técnica, objetiva, sem exageros.\n\nQUALIDADE: \"viavel\" quando fatos, provas e cálculo sustentam os pedidos; \"fragil\" quando falta prova essencial, há inconsistência no relato ou o cálculo depende de premissas fortes. Explique em resumo_executivo.\n\nSAÍDA: SOMENTE este JSON, sem texto fora dele:\n{\"content\": \"petição completa em markdown\", \"resumo_executivo\": \"5 a 8 linhas para o revisor: teses, pedidos principais, valor da causa, pontos de atenção\", \"documentos_anexar\": [\"CTPS\", \"Holerites\", ...], \"qualidade\": \"viavel\"|\"fragil\", \"pendencias\": [string]}"
+        }
+      },
+      "id": "d0800000-0000-4000-8000-000000000003",
+      "name": "Redator",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-5"
+        },
+        "options": {
+          "temperature": 0.2,
+          "maxTokensToSample": 16000
+        }
+      },
+      "id": "d0800000-0000-4000-8000-000000000004",
+      "name": "Modelo (Anthropic)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        480,
+        200
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Valida o JSON do Redator.\nconst pc = $('Peças para gerar (marca como gerando)').item.json;\nconst raw = String($json.output ?? $json.text ?? '').replace(/^```(json)?/, '').replace(/```$/, '').trim();\nlet out = null, erro = null;\ntry { out = JSON.parse(raw); } catch (e) { erro = 'JSON inválido: ' + e.message; }\nif (out && !String(out.content || '').trim()) { erro = 'peça vazia'; out = null; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null, tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nlet content = out?.content ?? null;\nif (out && Array.isArray(out.pendencias) && out.pendencias.length) content += '\\n\\n---\\n**Pendências para o revisor:**\\n' + out.pendencias.map(p => '- ' + p).join('\\n');\nreturn [{ json: { piece_id: pc.piece_id, ok: !!out, content, resumo_executivo: out?.resumo_executivo ?? null,\n                  documentos_anexar: Array.isArray(out?.documentos_anexar) ? out.documentos_anexar : [],\n                  qualidade: out?.qualidade ?? null, erro: erro ?? (out ? null : raw.slice(0, 300)),\n                  ai_meta: { agent_role: 'redacao', model: 'claude-sonnet-5', tokens_in, tokens_out, cost_usd } } }];"
+      },
+      "id": "d0800000-0000-4000-8000-000000000005",
+      "name": "Interpretar peça",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d0800000-0000-4000-8000-000000000006",
+      "name": "Peça válida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.piece_generation_save($1::uuid, $2, $3, $4::jsonb, $5, $6::jsonb) as peca;",
+        "options": {
+          "queryReplacement": "={{ $json.piece_id }}, {{ $json.content }}, {{ $json.resumo_executivo }}, {{ JSON.stringify($json.documentos_anexar) }}, {{ $json.qualidade }}, {{ JSON.stringify($json.ai_meta) }}"
+        }
+      },
+      "id": "d0800000-0000-4000-8000-000000000007",
+      "name": "piece_generation_save (vai para Revisão)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.piece_generation_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ $json.piece_id }}, {{ $json.erro }}"
+        }
+      },
+      "id": "d0800000-0000-4000-8000-000000000008",
+      "name": "piece_generation_failed (tarefa para a equipe)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 2 min": {
+      "main": [
+        [
+          {
+            "node": "Peças para gerar (marca como gerando)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Peças para gerar (marca como gerando)": {
+      "main": [
+        [
+          {
+            "node": "Redator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redator": {
+      "main": [
+        [
+          {
+            "node": "Interpretar peça",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar peça": {
+      "main": [
+        [
+          {
+            "node": "Peça válida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Peça válida?": {
+      "main": [
+        [
+          {
+            "node": "piece_generation_save (vai para Revisão)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "piece_generation_failed (tarefa para a equipe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modelo (Anthropic)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Redator",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "notes": "Gatilho: a cada 2 min. A peça é pedida quando a coleta termina: botão 'Finalizar coleta' (ui_finish_collection) ou o agente Coletor (advance_to 'peca' em apply_agent_effects) → request_piece_generation cria a peça em rascunho com geracao_status 'pendente'. piece_generation_claim() pega até 3 pendentes (e as presas em 'gerando' há 30+ min), marca 'gerando' e entrega os insumos: blocos obrigatórios + blocos das teses (piece_templates, invisíveis para o escritório), briefing, última qualificação (qualification_records), provas recebidas, dados do cliente e do escritório. O Redator devolve JSON; piece_generation_save() grava content, resumo_executivo, documentos_anexar e qualidade e põe a peça em Revisão (autor IA, agente redacao; o card aparece no Jurídico). Falha: piece_generation_failed() marca 'falhou' e abre 'erro_ia' para a equipe. Credenciais: Supabase (service_role) e Anthropic."
+  }
+}

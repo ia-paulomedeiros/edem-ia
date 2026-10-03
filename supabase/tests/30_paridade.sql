@@ -46,6 +46,9 @@ begin
   q := public.qualification_gate(v_lead, 'sistema');
   assert q.verbas_total < 2000, 'caso pequeno fica abaixo de R$ 2.000: ' || q.verbas_total;
   assert not q.passed and exists (select 1 from unnest(q.motivos) m where m like 'ticket_baixo:%<2000'), 'abaixo do LOW reprova no portão: ' || array_to_string(q.motivos, ',');
+  -- sem salário/admissão: motivo dados_insuficientes (na 002 isto quebrava com "malformed array literal")
+  q := public.qualification_gate(pg_temp.novo_lead('5511955550000', 'Lead Sem Dados'), 'sistema');
+  assert not q.passed and q.motivos = array['dados_insuficientes'], 'dados insuficientes';
 end $$;
 
 -- =============================================================================
@@ -350,7 +353,247 @@ do $$ begin
 end $$;
 reset role; reset request.jwt.claim.sub;
 
--- @@015@@
+-- =============================================================================
+-- 015 · 8. Documentos do WhatsApp entram no caso
+-- =============================================================================
+set request.jwt.claim.sub = '44444444-4444-4444-4444-444444444444';
+do $$
+declare d uuid := 'dddddddd-dddd-dddd-dddd-dddddddddddd'; v uuid; v_msg uuid; v_msg2 uuid; r jsonb; e public.evidences; v_path text;
+begin
+  v := pg_temp.novo_lead('5511955558001', 'Lead Documentos');
+  select m.id into v_msg from public.messages m join public.conversations c on c.id = m.conversation_id where c.lead_id = v order by m.created_at desc limit 1;
+  v_path := d || '/' || v || '/' || v_msg || '.jpg';
+  r := public.ingest_media(v_msg, v_path, 'image/jpeg', 245000, 'rg', null, 'meu rg');
+  select * into e from public.evidences where id = (r->>'evidence_id')::uuid;
+  assert e.status = 'recebida' and e.kind = 'foto' and e.title = 'RG' and e.doc_tipo = 'rg' and e.origem = 'whatsapp'
+     and e.storage_path = v_path and e.message_id = v_msg and e.size_bytes = 245000 and e.agent_role = 'recepcao', 'prova criada a partir da mídia';
+  assert (select media->>'evidence_id' from public.messages where id = v_msg) = e.id::text, 'mensagem aponta para a prova';
+  assert (select actor from public.case_events where lead_id = v and type = 'document_received') = 'ia'
+     and (select actor_agent from public.case_events where lead_id = v and type = 'document_received') = 'recepcao', 'document_received com autor IA e agente';
+  r := public.ingest_media(v_msg, v_path, 'image/jpeg', 245000, 'rg');
+  assert (r->>'duplicate')::boolean and (select count(*) from public.evidences where lead_id = v) = 1, 'reentrega não duplica';
+
+  -- atende uma prova solicitada do mesmo tipo
+  insert into public.evidences (office_id, lead_id, kind, title, status, doc_tipo) values (d, v, 'documento', 'CTPS', 'solicitada', 'ctps');
+  perform public.ingest_inbound('PNID-D', '5511955558001', 'Lead Documentos', 'wamid.doc2', null, '{"type":"document","mime_type":"application/pdf"}');
+  select id into v_msg2 from public.messages where wa_message_id = 'wamid.doc2';
+  r := public.ingest_media(v_msg2, d || '/' || v || '/' || v_msg2 || '.pdf', 'application/pdf', 88000, 'ctps', 'ctps.pdf');
+  assert (r->>'atendeu_pedido')::boolean and (select count(*) from public.evidences where lead_id = v) = 2, 'pedido atendido, sem prova nova';
+  assert (select status from public.evidences where lead_id = v and doc_tipo = 'ctps') = 'recebida', 'CTPS recebida';
+  assert public.doc_tipo_titulo('comprovante_pix') = 'Comprovante PIX' and public.doc_tipo_titulo('xyz') = 'Outro documento', 'catálogo de tipos';
+  begin
+    perform public.ingest_media(v_msg2, 'outro-escritorio/x.pdf', 'application/pdf');
+    raise exception 'aceitou caminho fora do escritório';
+  exception when others then assert sqlerrm like 'storage_path precisa%', sqlerrm; end;
+end $$;
+
+-- =============================================================================
+-- 015 · 9. Agendamentos que a IA retoma
+-- =============================================================================
+do $$
+declare d uuid := 'dddddddd-dddd-dddd-dddd-dddddddddddd'; v1 uuid; v2 uuid; r jsonb; t1 uuid; t2 uuid; t public.tasks;
+begin
+  v1 := pg_temp.novo_lead('5511955559001', 'Lead Agenda Livre');
+  r := public.apply_agent_effects(v1, null, 'qualificacao', null, null, null, null,
+         jsonb_build_object('title', 'Retomar', 'description', 'Ligar depois do almoço para fechar', 'due_at', now() - interval '5 minutes'));
+  t1 := (r->>'task_id')::uuid;
+  assert r->>'task_kind' = 'agendamento', 'IA cria agendamento';
+  assert (select payload->>'texto' from public.case_events where lead_id = v1 and type = 'agendamento_criado') like 'Agendamento criado para % — Ligar depois do almoço para fechar', 'evento com data e descrição';
+  assert (select actor_agent from public.case_events where lead_id = v1 and type = 'agendamento_criado') = 'qualificacao', 'evento com o agente autor';
+  assert (select agente_rotulo from public.v_agenda where id = t1) = 'Closer — Fernanda', 'v_agenda com o agente';
+
+  -- outro lead com a conversa assumida pela equipe
+  v2 := pg_temp.novo_lead('5511955559002', 'Lead Agenda Assumida');
+  update public.conversations set ai_paused = true where lead_id = v2;
+  insert into public.tasks (office_id, lead_id, title, description, due_at, created_by_actor, kind, agent_role)
+  values (d, v2, 'Retomar', 'Mandar a proposta', now() - interval '1 minute', 'ia', 'agendamento', 'qualificacao') returning id into t2;
+
+  assert public.agendamentos_escalar() = 1, 'escala só o agendamento com a conversa assumida';
+  assert exists (select 1 from public.human_interventions where lead_id = v2 and category = 'agendamento' and status = 'pendente'), 'intervenção agendamento para a equipe';
+  assert (select escalada_em from public.tasks where id = t2) is not null, 'marcado como escalado';
+  assert public.agendamentos_escalar() = 0, 'escalar é idempotente';
+  assert exists (select 1 from public.agendamentos_due(50) where task_id = t1) and not exists (select 1 from public.agendamentos_due(50) where task_id = t2), 'due: só conversa não assumida';
+
+  t := public.agendamento_mark_done(t1, 'realizado');
+  assert t.status = 'realizado' and t.done_at is not null and (select situacao from public.v_tasks where id = t1) = 'realizado', 'realizado';
+  assert not exists (select 1 from public.agendamentos_due(50) where task_id = t1), 'sai da fila';
+  assert (select actor from public.case_events where lead_id = v1 and type = 'agendamento_retomado') = 'ia', 'evento da retomada';
+
+  -- front: confirmar, remarcar, cancelar
+  t := public.ui_confirm_agendamento(t2);
+  assert t.status = 'confirmado' and t.escalada_em is null, 'confirmar libera para nova retomada';
+  t := public.ui_reschedule_agendamento(t2, now() + interval '2 days');
+  assert t.status = 'remarcado' and t.due_at > now() + interval '1 day', 'remarcar';
+  assert (select situacao from public.v_tasks where id = t2) = 'remarcado' and (select status_titulo from public.v_agenda where id = t2) = 'Remarcado', 'situação vem do status';
+  t := public.ui_cancel_agendamento(t2);
+  assert (select situacao from public.v_tasks where id = t2) = 'cancelado', 'cancelar';
+  assert (select count(*) from public.case_events where lead_id = v2 and type = 'agendamento_status' and actor = 'humano') = 3, 'eventos humanos';
+  -- UI antiga marcando done_at continua funcionando
+  update public.tasks set done_at = now() where id = t1;
+  insert into public.tasks (office_id, lead_id, title, due_at) values (d, v1, 'Tarefa manual', now() + interval '1 day') returning id into t1;
+  update public.tasks set done_at = now() where id = t1;
+  assert (select status from public.tasks where id = t1) = 'realizado', 'done_at → realizado';
+end $$;
+
+-- =============================================================================
+-- 015 · 10. Monitores da fila (idempotentes)
+-- =============================================================================
+do $$
+declare d uuid := 'dddddddd-dddd-dddd-dddd-dddddddddddd'; v_parado uuid; v_ia uuid; v_ctr uuid; v_dup uuid; v_ant uuid; r1 jsonb; r2 jsonb; n int; r jsonb;
+begin
+  -- caso parado: última mensagem há 3 dias
+  v_parado := pg_temp.novo_lead('5511955550101', 'Lead Parado');
+  update public.messages set created_at = now() - interval '3 days' where conversation_id in (select id from public.conversations where lead_id = v_parado);
+  update public.conversations set last_message_at = now() - interval '3 days' where lead_id = v_parado;
+  -- a IA não respondeu: última mensagem do lead há 40 min
+  v_ia := pg_temp.novo_lead('5511955550102', 'Lead Sem Resposta');
+  update public.messages set created_at = now() - interval '40 minutes' where conversation_id in (select id from public.conversations where lead_id = v_ia);
+  update public.conversations set last_message_at = now() - interval '40 minutes' where lead_id = v_ia;
+  -- contrato enviado há 25h
+  v_ctr := pg_temp.novo_lead('5511955550103', 'Lead Contrato');
+  insert into public.contracts (office_id, lead_id, status, honorarios_percent, sent_at) values (d, v_ctr, 'enviado', 30, now() - interval '25 hours');
+  -- mesmo CPF de quem já tem caso assinado
+  v_ant := pg_temp.novo_lead('5511955550104', 'Cliente Antigo');
+  update public.contacts set cpf = '020.383.999-48' where id = (select contact_id from public.leads where id = v_ant);
+  insert into public.contracts (office_id, lead_id, status, honorarios_percent) values (d, v_ant, 'assinado', 30);
+  v_dup := pg_temp.novo_lead('5511955550105', 'Cliente Antigo Outro Número');
+  update public.contacts set cpf = '020.383.999-48' where id = (select contact_id from public.leads where id = v_dup);
+
+  r1 := public.run_monitors();
+  assert exists (select 1 from public.human_interventions where lead_id = v_parado and category = 'caso_parado' and reason = 'Caso parado >48h' and requested_by_actor = 'sistema'), 'caso parado';
+  assert exists (select 1 from public.human_interventions where lead_id = v_ia and category = 'ia_sem_resposta' and reason = 'IA não respondeu há 30+ min'), 'IA sem resposta';
+  assert exists (select 1 from public.human_interventions where lead_id = v_ctr and category = 'contrato_nao_assinado_24h' and reason = 'Contrato pendente >24h'), 'contrato pendente';
+  assert exists (select 1 from public.human_interventions where lead_id = v_dup and category = 'cliente_ja_existente' and reason = 'Cliente já existente'), 'cliente já existente (CPF)';
+  assert not exists (select 1 from public.human_interventions where lead_id = v_ant and category = 'cliente_ja_existente'), 'quem já assinou não é alertado';
+  assert (r1->>'caso_parado')::int >= 1 and (r1->>'ia_sem_resposta')::int >= 1 and (r1->>'contrato_nao_assinado_24h')::int = 1 and (r1->>'cliente_ja_existente')::int = 1, 'contagem: ' || r1::text;
+  select count(*) into n from public.human_interventions where status in ('pendente','em_atendimento');
+  r2 := public.run_monitors();
+  assert (r2->>'caso_parado')::int = 0 and (r2->>'ia_sem_resposta')::int = 0 and (r2->>'contrato_nao_assinado_24h')::int = 0 and (r2->>'cliente_ja_existente')::int = 0, 'segunda rodada não cria nada: ' || r2::text;
+  assert (select count(*) from public.human_interventions where status in ('pendente','em_atendimento')) = n, 'segunda rodada não duplica';
+  assert (select grupo_titulo from public.v_intervention_cards where lead_id = v_parado and category = 'caso_parado') = 'Seguir conversa', 'caso parado cai em Seguir conversa';
+
+  -- na ingestão: telefone com caso assinado (lead encerrado) abre lead novo com alerta
+  perform public.advance_phase(v_ant, 'encerrado', 'sistema', null, null, 'protocolado e arquivado');
+  r := public.ingest_inbound('PNID-D', '5511955550104', 'Cliente Antigo', 'wamid.volta', 'Oi, e o meu processo?');
+  assert (r->>'new_lead')::boolean and not (r->>'ai_should_reply')::boolean, 'lead novo, IA não responde por cima';
+  assert exists (select 1 from public.human_interventions where lead_id = (r->>'lead_id')::uuid and category = 'cliente_ja_existente'), 'alerta na ingestão';
+end $$;
+
+-- =============================================================================
+-- 015 · 11. Calculista: qualificação detalhada e versionada
+-- =============================================================================
+do $$
+declare d uuid := 'dddddddd-dddd-dddd-dddd-dddddddddddd'; v uuid; v2 uuid; q public.qualification_records; p jsonb; ev jsonb;
+begin
+  v := pg_temp.novo_lead('5511955550201', 'Lead Calculista');
+  insert into public.case_data (lead_id, office_id, empresa, admissao, demissao, salario, tipo_rescisao, aviso_previo, ctps_assinada, fgts_depositado)
+  values (v, d, 'Fábrica Z', current_date - 1500, current_date - 700, 3200, 'sem_justa_causa', 'indenizado', true, false);
+  perform public.advance_phase(v, 'calculo', 'sistema');
+  insert into public.briefings (office_id, lead_id, status, completed_at, teses) values (d, v, 'concluido', now() - interval '1 minute', array['horas_extras']);
+
+  p := public.prescricao_info(v);
+  assert p->>'status_bienal' = 'alerta' and (p->>'dias_restantes')::int = 30, 'prescrição bienal calculada no banco: ' || p::text;
+  assert (p->>'limite_quinquenal')::date = ((p->>'data_provavel_ajuizamento')::date - interval '5 years')::date, 'quinquenal';
+  assert jsonb_array_length(p->'excecoes') >= 1, 'exceção do FGTS listada';
+
+  assert exists (select 1 from public.calculista_queue(10) c where c.lead_id = v and c.prescricao->>'status_bienal' = 'alerta'), 'na fila do Calculista com a prescrição';
+  q := public.save_qualification_record(v, '{"dados_base":{"salario_base_calculo":3200,"meses_contrato":"26"},
+        "verbas":[{"verba":"Horas extras","valor_calculado":"R$ 9.000,00","ja_recebido":0},{"verba":"FGTS","total":3101}],
+        "prescricao":{"status_bienal":"ok"}}'::jsonb, 'calculo', '{"tokens_in":10}');
+  assert q.versao = 1 and (q.data->>'total')::numeric = 12101 and q.data->>'faixa' = 'baixo' and q.data->>'faixa_label' = 'LOW_TICKET', 'v1 LOW: ' || q.data::text;
+  assert q.data->'prescricao'->>'status_bienal' = 'alerta', 'prescrição do LLM é substituída pela do banco';
+  assert (select verbas_total from public.lead_qualification where lead_id = v) = 12101 and (select faixa from public.lead_qualification where lead_id = v) = 'baixo', 'lead_qualification atualizada';
+  assert (select phase from public.leads where id = v) = 'provas', 'calculo → provas';
+  assert (select actor_agent from public.case_events where lead_id = v and type = 'phase_changed' order by seq desc limit 1) = 'calculo', 'avanço com o Calculista';
+  select payload into ev from public.case_events where lead_id = v and type = 'qualificacao_gerada' order by seq desc limit 1;
+  assert ev->>'texto' = 'Qualificação (cálculo) gerada — LOW_TICKET R$ 12.101,00', 'evento: ' || (ev->>'texto');
+  assert not exists (select 1 from public.calculista_queue(10) c where c.lead_id = v), 'sai da fila';
+  q := public.save_qualification_record(v, '{"verbas":[{"verba":"Rescisórias","total":"67.904,00"}]}');
+  assert q.versao = 2 and q.data->>'faixa' = 'medio' and (select faixa from public.lead_qualification where lead_id = v) = 'medio', 'v2 recalcula a faixa (MID)';
+
+  -- abaixo do mínimo: não avança; a equipe decide
+  v2 := pg_temp.novo_lead('5511955550202', 'Lead Calculista Pequeno');
+  perform public.advance_phase(v2, 'calculo', 'sistema');
+  q := public.save_qualification_record(v2, '{"verbas":[{"verba":"Saldo","total":1771}]}');
+  assert q.data->>'faixa_label' = 'INVIAVEL' and not (q.data->>'passed')::boolean, 'abaixo de 2.000 = inviável';
+  assert (select phase from public.leads where id = v2) = 'calculo', 'inviável não avança';
+  assert exists (select 1 from public.human_interventions where lead_id = v2 and category = 'saneamento_juridico' and 'calculista' = any (tags)), 'equipe avisada';
+  begin
+    perform public.save_qualification_record(v2, '{"verbas":"nada"}');
+    raise exception 'aceitou verbas inválidas';
+  exception when others then assert sqlerrm like 'data.verbas%', sqlerrm; end;
+  assert public.to_num('R$ 1.234,56') = 1234.56 and public.to_num('1,234.56') = 1234.56 and public.to_num('abc') is null, 'to_num';
+  assert exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'qualification_records'), 'Realtime';
+end $$;
+
+-- =============================================================================
+-- 015 · 12. Geração da peça
+-- =============================================================================
+do $$
+declare d uuid := 'dddddddd-dddd-dddd-dddd-dddddddddddd'; v uuid; v2 uuid; pc public.pieces; c record; n int; r jsonb;
+begin
+  v := (select id from public.leads where office_id = d and phase = 'provas' and contact_id = (select id from public.contacts where wa_id = '5511955550201'));
+  pc := public.ui_finish_collection(v);
+  assert (select phase from public.leads where id = v) = 'peca', 'Finalizar coleta leva à peça';
+  assert pc.status = 'rascunho' and pc.geracao_status = 'pendente' and pc.tese = 'horas_extras', 'peça criada em rascunho, pendente de geração';
+  assert (select actor from public.case_events where lead_id = v and type = 'piece_generation_requested') = 'humano', 'pedido com autor humano';
+  assert (public.ui_finish_collection(v)).id = pc.id, 'clicar de novo devolve a mesma peça';
+  assert (select count(*) from public.pieces where lead_id = v) = 1, 'clicar de novo não cria outra peça';
+
+  select count(*) into n from public.piece_generation_claim(5) x where x.piece_id = pc.id;
+  assert n = 1, 'n8n pega a peça';
+  assert (select geracao_status from public.pieces where id = pc.id) = 'gerando', 'marcada como gerando';
+  assert not exists (select 1 from public.piece_generation_claim(5) x where x.piece_id = pc.id), 'não pega duas vezes';
+  update public.pieces set geracao_status = 'pendente' where id = pc.id;
+  select * into c from public.piece_generation_claim(5) x where x.piece_id = pc.id;
+  assert jsonb_array_length(c.blocos) >= 8 and c.teses = array['horas_extras'] and (c.qualificacao->>'versao')::int = 2
+     and c.contato->>'nome' = 'Lead Calculista' and c.escritorio->>'nome' = 'Escritório D', 'insumos: blocos, teses, qualificação, contato, escritório';
+  perform set_config('request.jwt.claim.sub', '', false);   -- como o n8n
+  pc := public.piece_generation_save(pc.id, E'EXCELENTÍSSIMO SENHOR JUIZ...\n\nDOS FATOS...', 'Horas extras habituais sem pagamento.',
+                                     '["CTPS","Holerites"]', 'viavel', '{"tokens_out": 5000}');
+  assert pc.status = 'revisao' and pc.geracao_status = 'gerada' and pc.qualidade = 'viavel' and pc.resumo_executivo is not null, 'peça em revisão';
+  assert (select actor_agent from public.case_events where lead_id = v and type = 'piece_generated') = 'redacao', 'evento do Redator';
+  assert (select actor from public.case_events where lead_id = v and type = 'piece_status_changed' order by seq desc limit 1) = 'ia', 'mudança de etapa com autor IA';
+  perform set_config('request.jwt.claim.sub', '44444444-4444-4444-4444-444444444444', false);
+
+  -- o Coletor também finaliza
+  v2 := pg_temp.novo_lead('5511955550203', 'Lead Coletor');
+  perform public.advance_phase(v2, 'provas', 'sistema');
+  perform set_config('request.jwt.claim.sub', '', false);
+  r := public.apply_agent_effects(v2, null, 'provas', null, 'peca', 'documentos essenciais recebidos');
+  assert (select phase from public.leads where id = v2) = 'peca' and r->>'geracao' = 'pendente', 'Coletor pede a peça';
+  assert (select actor_agent from public.case_events where lead_id = v2 and type = 'piece_generation_requested') = 'provas', 'pedido com o agente Coletor';
+  pc := public.piece_generation_failed((r->>'piece_id')::uuid, 'timeout do modelo');
+  assert pc.geracao_status = 'falhou' and exists (select 1 from public.human_interventions where lead_id = v2 and category = 'erro_ia'), 'falha vira tarefa';
+  perform set_config('request.jwt.claim.sub', '44444444-4444-4444-4444-444444444444', false);
+
+  v2 := pg_temp.novo_lead('5511955550204', 'Lead Cedo Demais');
+  begin
+    perform public.ui_finish_collection(v2);
+    raise exception 'gerou peça antes da coleta';
+  exception when others then assert sqlerrm like 'a peça só é gerada depois%', sqlerrm; end;
+end $$;
+
+-- ---------- privilégios 015 e RLS
+reset request.jwt.claim.sub;
+set role authenticated;
+set request.jwt.claim.sub = '55555555-5555-5555-5555-555555555555';   -- Edu, atendente do D
+do $$ begin
+  assert (select count(*) from public.qualification_records) >= 3, 'membro lê o cálculo';
+  assert exists (select 1 from public.v_agenda), 'membro lê a agenda';
+  begin
+    insert into public.qualification_records (lead_id, office_id, versao) select id, office_id, 99 from public.leads limit 1;
+    raise exception 'front gravou cálculo';
+  exception when insufficient_privilege then null; when others then assert sqlerrm like '%row-level security%', sqlerrm; end;
+  assert not has_function_privilege('authenticated', 'public.ingest_media(uuid, text, text, bigint, text, text, text)', 'execute'), 'ingest_media só n8n';
+  assert not has_function_privilege('authenticated', 'public.run_monitors()', 'execute'), 'monitores só n8n';
+  assert not has_function_privilege('authenticated', 'public.agendamentos_due(int)', 'execute'), 'agenda da IA só n8n';
+  assert not has_function_privilege('authenticated', 'public.save_qualification_record(uuid, jsonb, text, jsonb)', 'execute'), 'cálculo só n8n';
+  assert not has_function_privilege('authenticated', 'public.piece_generation_claim(int)', 'execute'), 'geração só n8n';
+  assert not has_function_privilege('authenticated', 'public.ingest_inbound(text, text, text, text, text, jsonb, timestamptz)', 'execute'), 'ingestão só n8n';
+  assert has_function_privilege('authenticated', 'public.ui_finish_collection(uuid)', 'execute') and has_function_privilege('authenticated', 'public.ui_reschedule_agendamento(uuid, timestamptz)', 'execute'), 'RPCs do front';
+end $$;
+reset role; reset request.jwt.claim.sub;
 
 rollback;
 \echo PARIDADE OK

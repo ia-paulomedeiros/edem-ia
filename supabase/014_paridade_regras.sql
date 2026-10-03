@@ -141,7 +141,7 @@ begin
 
   v_verbas := public.calc_verbas(p_lead);
   if not coalesce((v_verbas->>'calculado')::boolean, false) then
-    v_motivos := v_motivos || 'dados_insuficientes';
+    v_motivos := array_append(v_motivos, 'dados_insuficientes');
   else
     v_total := (v_verbas->>'total')::numeric;
     v_meses := (v_verbas->>'vinculo_meses')::int;

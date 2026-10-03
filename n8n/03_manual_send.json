@@ -57,7 +57,7 @@
             {
               "id": "s3",
               "leftValue": "={{ $json.body.record.sender }}",
-              "rightValue": "^(humano|sistema)$",
+              "rightValue": "^(humano|sistema|ia)$",
               "operator": {
                 "type": "string",
                 "operation": "regex"
@@ -78,7 +78,7 @@
         "options": {}
       },
       "id": "c3000000-0000-4000-8000-000000000002",
-      "name": "Mensagem manual pendente?",
+      "name": "Mensagem pendente de envio?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
@@ -166,23 +166,11 @@
       "main": [
         [
           {
-            "node": "Mensagem manual pendente?",
+            "node": "Mensagem pendente de envio?",
             "type": "main",
             "index": 0
           }
         ]
-      ]
-    },
-    "Mensagem manual pendente?": {
-      "main": [
-        [
-          {
-            "node": "Destino + token do Vault",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        []
       ]
     },
     "Destino + token do Vault": {
@@ -206,12 +194,24 @@
           }
         ]
       ]
+    },
+    "Mensagem pendente de envio?": {
+      "main": [
+        [
+          {
+            "node": "Destino + token do Vault",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "No Supabase: Database > Webhooks > nova: tabela public.messages, evento INSERT, URL = <n8n>/webhook/supabase/messages, header x-webhook-secret = SUPABASE_WEBHOOK_SECRET (env do n8n). A UI nunca chama a Graph API: ela só cria a linha (send_manual_message). Desde a 011 também envia mensagens com sender = sistema (link do contrato, régua de follow-up): elas não pausam a IA. Se messages.template estiver preenchido ({name, language:{code}, components}), envia como template (janela de 24h fechada); senão, texto livre."
+    "notes": "No Supabase: Database > Webhooks > nova: tabela public.messages, evento INSERT, URL = <n8n>/webhook/supabase/messages, header x-webhook-secret = SUPABASE_WEBHOOK_SECRET (env do n8n). A UI nunca chama a Graph API: ela só cria a linha (send_manual_message). Desde a 011 também envia mensagens com sender = sistema (link do contrato, régua de follow-up): elas não pausam a IA. Se messages.template estiver preenchido ({name, language:{code}, components}), envia como template (janela de 24h fechada); senão, texto livre. 015: envia também as mensagens da IA (sender = ia): o WA 02 e o AG 09 só gravam a linha; todo envio sai por aqui."
   }
 }

@@ -1,0 +1,262 @@
+{
+  "name": "CALC 11 — Calculista (qualificação detalhada)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "d1100000-0000-4000-8000-000000000001",
+      "name": "A cada 5 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from public.calculista_queue(5);",
+        "options": {}
+      },
+      "id": "d1100000-0000-4000-8000-000000000002",
+      "name": "Leads esperando o Calculista",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ JSON.stringify({ lead: $json.nome, briefing: $json.briefing, case_data: $json.case_data, prescricao: $json.prescricao, estimativa_de_triagem: $json.estimativa, params: $json.params }) }}",
+        "options": {
+          "systemMessage": "Você é o Qualificador (Calculista) do escritório: um calculista trabalhista brasileiro. Recebe a entrevista (briefing) e os dados do caso e devolve a qualificação detalhada com as verbas calculadas.\n\nREGRAS\n- Use só o que está nos dados. Onde faltar informação, use premissa conservadora e diga qual foi em \"observacao\".\n- A PRESCRIÇÃO JÁ FOI CALCULADA PELO SISTEMA (campo prescricao). Não recalcule e não contradiga: calcule só o período não prescrito (a partir de prescricao.inicio_periodo_nao_prescrito; meses = prescricao.meses_nao_prescritos). Se status_bienal = \"vencido\", calcule mesmo assim e registre em observacoes que o caso está prescrito.\n- Valores em reais, números puros (ex.: 1234.56), sem \"R$\" e sem separador de milhar.\n- Uma linha por verba. Reflexos dentro da própria verba (FGTS 8%, multa de 40% do FGTS quando a saída for sem justa causa ou rescisão indireta, DSR, férias + 1/3, 13º, aviso prévio), cada um como número.\n- total = valor_calculado - ja_recebido. Nunca negativo.\n- Verbas comuns: saldo de salário, aviso prévio indenizado (30 dias + 3 por ano, máx. 90), 13º proporcional, férias vencidas e proporcionais + 1/3, FGTS não depositado, multa de 40%, multa do art. 477, horas extras (adicional de 50%, ou 100% em domingos e feriados) com reflexos, diferenças por desvio/acúmulo de função, adicional de insalubridade/periculosidade, dano moral só quando houver fato concreto (estime com prudência e explique).\n\nSAÍDA: SOMENTE este JSON, sem texto fora dele:\n{\"dados_base\": {\"salario_informado\": number|null, \"salario_registrado\": number|null, \"salario_por_fora\": number|null, \"salario_base_calculo\": number, \"admissao\": \"AAAA-MM-DD\"|null, \"saida\": \"AAAA-MM-DD\"|null, \"meses_contrato\": number|null, \"tipo_rescisao\": string|null, \"jornada_relatada\": string|null, \"valores_ja_recebidos\": number|null},\n \"verbas\": [{\"verba\": string, \"descricao\": string, \"base_calculo\": string, \"valor_principal\": number, \"reflexos\": {\"fgts\": number, \"multa_fgts\": number, \"dsr\": number, \"ferias_terco\": number, \"decimo_terceiro\": number, \"aviso_previo\": number}, \"valor_calculado\": number, \"ja_recebido\": number, \"total\": number, \"observacao\": string}],\n \"observacoes\": string}"
+        }
+      },
+      "id": "d1100000-0000-4000-8000-000000000003",
+      "name": "Calculista",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-5"
+        },
+        "options": {
+          "temperature": 0,
+          "maxTokensToSample": 4000
+        }
+      },
+      "id": "d1100000-0000-4000-8000-000000000004",
+      "name": "Modelo (Anthropic)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        480,
+        200
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Valida o JSON do Calculista; números chegam como número (o banco ainda aceita \"R$ 1.234,56\").\nconst lead = $('Leads esperando o Calculista').item.json;\nconst raw = String($json.output ?? $json.text ?? '').replace(/^```(json)?/, '').replace(/```$/, '').trim();\nlet data = null, erro = null;\ntry { data = JSON.parse(raw); } catch (e) { erro = 'JSON inválido: ' + e.message; }\nif (data && !Array.isArray(data.verbas)) { erro = 'verbas ausente'; data = null; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null, tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: { lead_id: lead.lead_id, ok: !!data, data, erro: erro ?? (data ? null : raw.slice(0, 300)),\n                  ai_meta: { agent_role: 'calculo', model: 'claude-sonnet-5', tokens_in, tokens_out, cost_usd } } }];"
+      },
+      "id": "d1100000-0000-4000-8000-000000000005",
+      "name": "Interpretar cálculo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d1100000-0000-4000-8000-000000000006",
+      "name": "JSON válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.save_qualification_record($1::uuid, $2::jsonb, 'calculo', $3::jsonb) as registro;",
+        "options": {
+          "queryReplacement": "={{ $json.lead_id }}, {{ JSON.stringify($json.data) }}, {{ JSON.stringify($json.ai_meta) }}"
+        }
+      },
+      "id": "d1100000-0000-4000-8000-000000000007",
+      "name": "save_qualification_record (versão nova, avança para Coleta)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.calculista_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ $json.lead_id }}, {{ $json.erro }}"
+        }
+      },
+      "id": "d1100000-0000-4000-8000-000000000008",
+      "name": "calculista_failed (tenta de novo em 1h)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 5 min": {
+      "main": [
+        [
+          {
+            "node": "Leads esperando o Calculista",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leads esperando o Calculista": {
+      "main": [
+        [
+          {
+            "node": "Calculista",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculista": {
+      "main": [
+        [
+          {
+            "node": "Interpretar cálculo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar cálculo": {
+      "main": [
+        [
+          {
+            "node": "JSON válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JSON válido?": {
+      "main": [
+        [
+          {
+            "node": "save_qualification_record (versão nova, avança para Coleta)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "calculista_failed (tenta de novo em 1h)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modelo (Anthropic)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Calculista",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "notes": "Gatilho: a cada 5 min lê calculista_queue(): leads em Viabilidade (calculo) com a entrevista (briefing) concluída e sem registro de cálculo depois dela (falha recente espera 1h). A prescrição (bienal, quinquenal, meses não prescritos, exceções) vem calculada do banco (prescricao_info) e é injetada no prompt; o modelo devolve dados_base e verbas[] em JSON. save_qualification_record() grava a versão nova em qualification_records (Realtime), substitui a prescrição pela do banco, atualiza lead_qualification (total, faixa, passed), grava o evento 'Qualificação (cálculo) gerada — LOW_TICKET R$ X' e avança calculo → provas com autor IA (agente calculo). Abaixo do ticket mínimo ou prescrito: não avança e abre 'saneamento_juridico' para a equipe decidir. calc_verbas fica só como estimativa de triagem. Credenciais: Supabase (service_role) e Anthropic."
+  }
+}

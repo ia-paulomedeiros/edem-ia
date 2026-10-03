@@ -192,7 +192,11 @@
     },
     {
       "parameters": {
-        "model": "claude-sonnet-5",
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-5"
+        },
         "options": {
           "temperature": 0.3,
           "maxTokensToSample": 1024
@@ -201,7 +205,7 @@
       "id": "b2000000-0000-4000-8000-000000000009",
       "name": "Modelo (Anthropic)",
       "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
-      "typeVersion": 1.2,
+      "typeVersion": 1.3,
       "position": [
         1440,
         360
@@ -215,7 +219,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Normaliza a saída do agente e monta ai_meta (custo derivado, nunca digitado).\nconst ctx = $('Agente da fase + contexto + dossiê').item.json;\nconst raw = $json.output ?? $json.text ?? '';\nlet parsed;\ntry { parsed = JSON.parse(raw.replace(/^```(json)?/,'').replace(/```$/,'').trim()); } catch { parsed = { reply: String(raw) }; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null;\nconst tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: {\n  ...ctx,\n  reply: parsed.reply ?? '',\n  advance_to: parsed.advance_to ?? null,\n  advance_reason: parsed.advance_reason ?? null,\n  intervention: parsed.intervention ?? null,\n  case_data: parsed.case_data ?? null,\n  task: parsed.task ?? null,\n  contract: parsed.contract ?? null,\n  briefing: parsed.briefing ?? null,\n  ai_meta: { agent_role: ctx.agent.role, model: ctx.agent.model, tokens_in, tokens_out, cost_usd }\n}}];"
+        "jsCode": "// Normaliza a saída do agente e monta ai_meta (custo derivado, nunca digitado).\nconst ctx = $('Agente da fase + contexto + dossiê').item.json;\nconst raw = $json.output ?? $json.text ?? '';\nlet parsed;\ntry { parsed = JSON.parse(raw.replace(/^```(json)?/,'').replace(/```$/,'').trim()); } catch { parsed = { reply: String(raw) }; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null;\nconst tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: {\n  ...ctx,\n  reply: parsed.reply ?? '',\n  advance_to: parsed.advance_to ?? null,\n  advance_reason: parsed.advance_reason ?? null,\n  intervention: parsed.intervention ?? null,\n  case_data: parsed.case_data ?? null,\n  task: parsed.task ?? null,\n  contract: parsed.contract ?? null,\n  briefing: parsed.briefing ?? null,\n  ai_meta: { agent_role: ctx.agent.role, model: ctx.agent.model, tokens_in, tokens_out, cost_usd, via: 'inbound' }\n}}];"
       },
       "id": "b2000000-0000-4000-8000-000000000010",
       "name": "Interpretar resposta",
@@ -259,85 +263,11 @@
         }
       },
       "id": "b2000000-0000-4000-8000-000000000012",
-      "name": "Gravar linha em messages (antes do envio)",
+      "name": "Gravar linha em messages (o WA 03 envia)",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
         1920,
-        100
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "",
-          "name": "Supabase (service_role)"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "select decrypted_secret as token from vault.decrypted_secrets where name = $1;",
-        "options": {
-          "queryReplacement": "={{ $('Interpretar resposta').item.json.token_secret_name }}"
-        }
-      },
-      "id": "b2000000-0000-4000-8000-000000000013",
-      "name": "Token do Vault (nunca sai do n8n)",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        2160,
-        100
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "",
-          "name": "Supabase (service_role)"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://graph.facebook.com/v21.0/{{ $('Interpretar resposta').item.json.phone_number_id }}/messages",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $json.token }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $('Interpretar resposta').item.json.wa_id, type: 'text', text: { body: $('Interpretar resposta').item.json.reply } }) }}",
-        "options": {}
-      },
-      "id": "b2000000-0000-4000-8000-000000000014",
-      "name": "Graph API: enviar",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2400,
-        100
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "update public.messages\n   set status = case when $2 is null then 'failed' else 'sent' end,\n       wa_message_id = $2,\n       error = $3\n where id = $1;",
-        "options": {
-          "queryReplacement": "={{ $('Gravar linha em messages (antes do envio)').item.json.message_id }}, {{ $json.messages?.[0]?.id ?? null }}, {{ $json.error ? JSON.stringify($json.error).slice(0, 500) : null }}"
-        }
-      },
-      "id": "b2000000-0000-4000-8000-000000000015",
-      "name": "Marcar enviada / falha",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        2640,
         100
       ],
       "credentials": {
@@ -538,6 +468,289 @@
         2400,
         0
       ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "m",
+              "leftValue": "={{ $('Extrair itens').item.json.media?.type ?? '' }}",
+              "rightValue": "^(image|document|video)$",
+              "operator": {
+                "type": "string",
+                "operation": "regex"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c2000000-0000-4000-8000-000000000101",
+      "name": "É documento, imagem ou vídeo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select wn.office_id, s.decrypted_secret as wa_token\nfrom public.whatsapp_numbers wn\nleft join vault.decrypted_secrets s on s.name = wn.token_secret_name\nwhere wn.phone_number_id = $1;",
+        "options": {
+          "queryReplacement": "={{ $('Extrair itens').item.json.phone_number_id }}"
+        }
+      },
+      "id": "c2000000-0000-4000-8000-000000000102",
+      "name": "Token do WhatsApp (mídia)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        -420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.facebook.com/v21.0/{{ $('Extrair itens').item.json.media.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.wa_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c2000000-0000-4000-8000-000000000103",
+      "name": "URL do arquivo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        -420
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Token do WhatsApp (mídia)').item.json.wa_token }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "arquivo"
+            }
+          }
+        }
+      },
+      "id": "c2000000-0000-4000-8000-000000000104",
+      "name": "Baixar arquivo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        -420
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Monta o caminho no bucket e, para imagem/PDF, o pedido de classificação ao Claude.\nconst it = $('Extrair itens').item.json;\nconst ing = $('ingest_inbound (linha primeiro)').item.json.r;\nconst bin = $input.item.binary?.arquivo;\nif (!bin) return [{ json: { ok: false, motivo: 'download falhou' } }];\nconst mime = it.media?.mime_type || bin.mimeType || 'application/octet-stream';\nconst extMap = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf', 'video/mp4': 'mp4', 'video/3gpp': '3gp',\n                 'application/msword': 'doc', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx' };\nconst ext = extMap[mime] || (it.media?.filename?.split('.').pop() ?? 'bin').toLowerCase();\nconst path = `${ing.office_id}/${ing.lead_id}/${ing.message_id}.${ext}`;\nconst buf = await this.helpers.getBinaryDataBuffer(0, 'arquivo');\nconst classificar = mime.startsWith('image/') || mime === 'application/pdf';\nconst tipos = 'rg, cnh, cpf, ctps, holerite, comprovante_pix, extrato_fgts, trct, atestado, laudo, print_conversa, foto, outro';\nconst bloco = mime === 'application/pdf'\n  ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buf.toString('base64') } }\n  : { type: 'image', source: { type: 'base64', media_type: mime, data: buf.toString('base64') } };\nconst request = classificar ? {\n  model: 'claude-sonnet-5', max_tokens: 50, thinking: { type: 'disabled' },\n  messages: [{ role: 'user', content: [bloco, { type: 'text', text:\n    `Classifique este documento enviado por um trabalhador ao escritório de advocacia. Responda SOMENTE com uma destas palavras: ${tipos}. Use \"foto\" para foto comum (local de trabalho, lesão, uniforme) e \"print_conversa\" para captura de tela de conversa.` +\n    (it.media?.caption ? ` Legenda enviada: \"${it.media.caption}\".` : '') }] }]\n} : null;\nreturn [{ json: { ok: true, path, mime, ext, size: buf.length, classificar, request, message_id: ing.message_id,\n                  filename: it.media?.filename ?? null, caption: it.media?.caption ?? null },\n          binary: { arquivo: bin } }];"
+      },
+      "id": "c2000000-0000-4000-8000-000000000105",
+      "name": "Preparar arquivo e classificação",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c",
+              "leftValue": "={{ $json.classificar }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c2000000-0000-4000-8000-000000000106",
+      "name": "Classificar com o Claude?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {}
+      },
+      "id": "c2000000-0000-4000-8000-000000000107",
+      "name": "Claude: tipo do documento",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        -520
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "",
+          "name": "Anthropic"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tipo final do documento; sem classificação (vídeo, docx) ou com erro, cai no padrão pelo tipo de arquivo.\nconst prep = $('Preparar arquivo e classificação').item;\nconst tipos = ['rg','cnh','cpf','ctps','holerite','comprovante_pix','extrato_fgts','trct','atestado','laudo','print_conversa','foto','outro'];\nconst txt = String($json.content?.[0]?.text ?? '').toLowerCase().trim().replace(/[^a-z_]/g, '');\nconst padrao = prep.json.mime.startsWith('image/') ? 'foto' : 'outro';\nconst doc_tipo = tipos.includes(txt) ? txt : padrao;\nreturn [{ json: { ...prep.json, doc_tipo }, binary: prep.binary }];"
+      },
+      "id": "c2000000-0000-4000-8000-000000000108",
+      "name": "Tipo do documento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/storage/v1/object/provas/{{ $json.path }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-upsert",
+              "value": "true"
+            },
+            {
+              "name": "Content-Type",
+              "value": "={{ $json.mime }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "arquivo",
+        "options": {}
+      },
+      "id": "c2000000-0000-4000-8000-000000000109",
+      "name": "Subir no bucket provas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2880,
+        -420
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "",
+          "name": "Supabase API (service_role)"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.ingest_media($1::uuid, $2, $3, $4::bigint, $5, $6, $7) as prova;",
+        "options": {
+          "queryReplacement": "={{ $('Tipo do documento').item.json.message_id }}, {{ $('Tipo do documento').item.json.path }}, {{ $('Tipo do documento').item.json.mime }}, {{ $('Tipo do documento').item.json.size }}, {{ $('Tipo do documento').item.json.doc_tipo }}, {{ $('Tipo do documento').item.json.filename }}, {{ $('Tipo do documento').item.json.caption }}"
+        }
+      },
+      "id": "c2000000-0000-4000-8000-000000000110",
+      "name": "ingest_media (prova no caso)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3120,
+        -420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Devolve o item original da ingestão para o agente responder (\"Recebi o RG, obrigada!\").\nreturn [{ json: $('ingest_inbound (linha primeiro)').item.json }];"
+      },
+      "id": "c2000000-0000-4000-8000-000000000111",
+      "name": "Retomar fluxo (documento)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        -420
+      ]
     }
   ],
   "connections": {
@@ -585,7 +798,7 @@
       "main": [
         [
           {
-            "node": "É áudio?",
+            "node": "É documento, imagem ou vídeo?",
             "type": "main",
             "index": 0
           }
@@ -641,45 +854,12 @@
       "main": [
         [
           {
-            "node": "Gravar linha em messages (antes do envio)",
+            "node": "Gravar linha em messages (o WA 03 envia)",
             "type": "main",
             "index": 0
           },
           {
             "node": "Efeitos (dados, fase, fila) — autor IA",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Gravar linha em messages (antes do envio)": {
-      "main": [
-        [
-          {
-            "node": "Token do Vault (nunca sai do n8n)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Token do Vault (nunca sai do n8n)": {
-      "main": [
-        [
-          {
-            "node": "Graph API: enviar",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Graph API: enviar": {
-      "main": [
-        [
-          {
-            "node": "Marcar enviada / falha",
             "type": "main",
             "index": 0
           }
@@ -769,13 +949,148 @@
           }
         ]
       ]
+    },
+    "É documento, imagem ou vídeo?": {
+      "main": [
+        [
+          {
+            "node": "Token do WhatsApp (mídia)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "É áudio?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token do WhatsApp (mídia)": {
+      "main": [
+        [
+          {
+            "node": "URL do arquivo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "URL do arquivo": {
+      "main": [
+        [
+          {
+            "node": "Baixar arquivo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baixar arquivo": {
+      "main": [
+        [
+          {
+            "node": "Preparar arquivo e classificação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar arquivo e classificação": {
+      "main": [
+        [
+          {
+            "node": "Classificar com o Claude?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classificar com o Claude?": {
+      "main": [
+        [
+          {
+            "node": "Claude: tipo do documento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tipo do documento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude: tipo do documento": {
+      "main": [
+        [
+          {
+            "node": "Tipo do documento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tipo do documento": {
+      "main": [
+        [
+          {
+            "node": "Subir no bucket provas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Subir no bucket provas": {
+      "main": [
+        [
+          {
+            "node": "ingest_media (prova no caso)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ingest_media (prova no caso)": {
+      "main": [
+        [
+          {
+            "node": "Retomar fluxo (documento)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retomar fluxo (documento)": {
+      "main": [
+        [
+          {
+            "node": "ai_should_reply? (trava no banco)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "Credencial Postgres = connection string do Supabase com service_role (bypassa RLS; só o n8n usa). Env: LLM_PRICE_IN_PER_MTOK, LLM_PRICE_OUT_PER_MTOK para o custo em ai_meta. O prompt de cada agente vem de public.agents.system_prompt (pendência: conteúdo). Mídia recebida: baixar via /{media_id} e subir no bucket 'provas' fica para o Sprint 3. Áudio (013): antes de chamar o agente, baixa a mídia da Meta e transcreve com o Whisper (chave da integração openai_whisper; sem chave, o agente recebe o áudio sem texto e pede para repetir). A transcrição vira o body da mensagem e fica em media.transcript. O prompt de cada agente vem de agent_config_full() com {{agent_name}}/{{office_name}}/{{honorarios}}/{{whatsapp_juridico}} resolvidos. 014: o agente é escolhido por lead (agent_config_full_lead: peça em saneamento → Saneador; persona do escritório entra como {{agent_name}}; métricas comerciais e taxa entram em {{proposta_honorarios}}/{{prova_social}}). O dossiê enviado ao modelo inclui etapa, peça atual (status, alerta, documentos) e o bloco escritorio. advance_to aceita 'encerrado' (advance_reason = código de close_reasons) e 'revisao' (Saneador)."
+    "notes": "Credencial Postgres = connection string do Supabase com service_role (bypassa RLS; só o n8n usa). Env: LLM_PRICE_IN_PER_MTOK, LLM_PRICE_OUT_PER_MTOK para o custo em ai_meta. O prompt de cada agente vem de public.agents.system_prompt (pendência: conteúdo). Mídia recebida: baixar via /{media_id} e subir no bucket 'provas' fica para o Sprint 3. Áudio (013): antes de chamar o agente, baixa a mídia da Meta e transcreve com o Whisper (chave da integração openai_whisper; sem chave, o agente recebe o áudio sem texto e pede para repetir). A transcrição vira o body da mensagem e fica em media.transcript. O prompt de cada agente vem de agent_config_full() com {{agent_name}}/{{office_name}}/{{honorarios}}/{{whatsapp_juridico}} resolvidos. 014: o agente é escolhido por lead (agent_config_full_lead: peça em saneamento → Saneador; persona do escritório entra como {{agent_name}}; métricas comerciais e taxa entram em {{proposta_honorarios}}/{{prova_social}}). O dossiê enviado ao modelo inclui etapa, peça atual (status, alerta, documentos) e o bloco escritorio. advance_to aceita 'encerrado' (advance_reason = código de close_reasons) e 'revisao' (Saneador). 015: (a) documentos, imagens e vídeos recebidos: baixa da Graph API, classifica imagem/PDF com o Claude (rg, cnh, cpf, ctps, holerite, comprovante_pix, extrato_fgts, trct, atestado, laudo, print_conversa, foto, outro), sobe em provas/<office>/<lead>/<message_id>.<ext> pela API do Storage (credencial 'Supabase API (service_role)', env SUPABASE_URL) e chama ingest_media(), que cria a prova (evidences, status recebida) e o evento document_received com o agente do lead; o n8n não faz insert direto. Se a subida falhar, a prova não é criada e o agente responde normalmente. (b) Envio: este fluxo só grava a resposta em messages (status pending); o WA 03 (Database Webhook em messages) envia toda linha pendente, da IA inclusive, pelo provedor ativo."
   },
   "notes": ""
 }

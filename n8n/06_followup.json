@@ -130,7 +130,8 @@
           "id": "",
           "name": "Supabase (service_role)"
         }
-      }
+      },
+      "id": "f6000000-0000-4000-8000-000000000101"
     }
   ],
   "connections": {

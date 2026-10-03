@@ -1,0 +1,65 @@
+{
+  "name": "MON 10 — Monitores da fila",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "d1000000-0000-4000-8000-000000000001",
+      "name": "A cada 10 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.run_monitors() as resultado;",
+        "options": {}
+      },
+      "id": "d1000000-0000-4000-8000-000000000002",
+      "name": "run_monitors()",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 10 min": {
+      "main": [
+        [
+          {
+            "node": "run_monitors()",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "notes": "Gatilho: a cada 10 min. run_monitors() (service_role) abre intervenções com autor 'sistema', no máximo uma aberta por lead e categoria (rodar duas vezes não duplica): 'Caso parado >48h' (fase de atendimento sem mensagem há 48h, conversa com a IA, sem régua em curso) → Seguir conversa; 'IA não respondeu há 30+ min' (última mensagem é do lead e ai_should_reply) → Avisos; 'Contrato pendente >24h' (contrato enviado e não assinado) → Follow; 'Cliente já existente' (CPF com caso assinado em outro lead) → Suporte/Spam. A ingestão (ingest_inbound) também abre 'Cliente já existente' quando um telefone com caso assinado inicia um lead novo. Devolve a contagem do que criou nesta rodada."
+  }
+}

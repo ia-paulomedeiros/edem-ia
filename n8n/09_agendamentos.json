@@ -1,0 +1,318 @@
+{
+  "name": "AG 09 — Agendamentos que a IA retoma",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "d9000000-0000-4000-8000-000000000001",
+      "name": "A cada 5 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.agendamentos_escalar() as escalados;",
+        "options": {}
+      },
+      "id": "d9000000-0000-4000-8000-000000000002",
+      "name": "Escalar agendamentos com a conversa assumida",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from public.agendamentos_due(20);",
+        "options": {}
+      },
+      "id": "d9000000-0000-4000-8000-000000000003",
+      "name": "Agendamentos vencidos (conversa com a IA)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  l.id as lead_id, l.office_id, l.phase, c.id as conversation_id, $2::uuid as task_id, $3::text as retomada,\n  public.agent_config_full_lead(l.id) as agent,\n  public.conversation_context(c.id, 30) as context,\n  public.lead_dossier(l.id) as dossier\nfrom public.conversations c\njoin public.leads l on l.id = c.lead_id\nwhere c.id = $1 and public.ai_should_reply(c.id);",
+        "options": {
+          "queryReplacement": "={{ $json.conversation_id }}, {{ $json.task_id }}, {{ $json.description || $json.title }}"
+        }
+      },
+      "id": "d9000000-0000-4000-8000-000000000004",
+      "name": "Agente do lead + contexto + dossiê",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        720,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ JSON.stringify($json.context) }}\n\nRETOMADA AGENDADA: {{ $json.retomada }}\nO lead não escreveu agora: é você quem retoma a conversa no horário combinado. Retome de forma natural, de onde a conversa parou, sem dizer que é uma mensagem automática e sem repetir perguntas já respondidas.",
+        "options": {
+          "systemMessage": "={{ $json.agent.system_prompt }}\n\n## Dossiê do caso (JSON)\n{{ JSON.stringify({ lead: $json.dossier.lead, etapa: $json.dossier.etapa, case_data: $json.dossier.case_data, qualification: $json.dossier.qualification, evidences: $json.dossier.evidences, pieces: ($json.dossier.pieces || []).slice(0, 1).map(p => ({ status: p.status, alerta: p.alerta, documentos_anexar: p.documentos_anexar })), escritorio: $json.dossier.escritorio, params: $json.dossier.params }) }}\n\n## Formato de saída (obrigatório)\nResponda SOMENTE com JSON:\n{\"reply\": \"texto para o WhatsApp\", \"advance_to\": null | \"triagem\"|\"qualificacao\"|\"contrato\"|\"briefing\"|\"calculo\"|\"provas\"|\"peca\"|\"encerrado\"|\"revisao\", \"advance_reason\": string|null (com \"encerrado\", advance_reason é o código do motivo: cliente_desistiu | servidor_publico | sem_caso | sem_viabilidade | sem_provas | prescrito | insanavel | sem_resposta; \"revisao\" só o Saneador usa, para devolver a peça ao revisor), \"intervention\": null | {\"category\": \"duvida_juridica\"|\"fora_de_escopo\"|\"cliente_insatisfeito\"|\"pedido_de_humano\"|\"erro_ia\"|\"outro\", \"reason\": string, \"priority\": 1|2|3}, \"case_data\": null | {campos de public.case_data a atualizar}, \"task\": null | {\"title\": string, \"description\": string, \"due_at\": \"data-hora ISO 8601 com fuso, quando o lead combinar um retorno\"}, \"contract\": null | {\"action\": \"send\", \"honorarios_percent\": number|null} (só o agente de contrato, quando o lead aceitar os honorários), \"briefing\": null | {\"dados_pessoais\": {}, \"dados_vinculo\": {}, \"verbas\": {}, \"timeline\": [], \"inconsistencias\": string, \"gaps\": string, \"teses\": [string], \"fatos\": string, \"alertas\": string, \"testemunhas\": [], \"conteudo\": \"markdown completo\", \"status\": \"em_andamento\"|\"concluido\"} (só o agente de briefing; envie o que apurou nesta rodada)}"
+        }
+      },
+      "id": "d9000000-0000-4000-8000-000000000005",
+      "name": "Agente",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-5"
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokensToSample": 1024
+        }
+      },
+      "id": "d9000000-0000-4000-8000-000000000006",
+      "name": "Modelo (Anthropic)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        960,
+        200
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza a saída do agente e monta ai_meta (custo derivado, nunca digitado).\nconst ctx = $('Agente do lead + contexto + dossiê').item.json;\nconst raw = $json.output ?? $json.text ?? '';\nlet parsed;\ntry { parsed = JSON.parse(String(raw).replace(/^```(json)?/,'').replace(/```$/,'').trim()); } catch { parsed = { reply: String(raw) }; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null;\nconst tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: {\n  ...ctx,\n  reply: parsed.reply ?? '',\n  advance_to: parsed.advance_to ?? null,\n  advance_reason: parsed.advance_reason ?? null,\n  intervention: parsed.intervention ?? null,\n  case_data: parsed.case_data ?? null,\n  task: parsed.task ?? null,\n  contract: parsed.contract ?? null,\n  briefing: parsed.briefing ?? null,\n  ai_meta: { agent_role: ctx.agent.role, model: ctx.agent.model, tokens_in, tokens_out, cost_usd, via: 'agendamento' }\n}}];"
+      },
+      "id": "d9000000-0000-4000-8000-000000000007",
+      "name": "Interpretar resposta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into public.messages (office_id, conversation_id, direction, sender, body, status, ai_meta)\nvalues ($1, $2, 'out', 'ia', $3, 'pending', $4::jsonb)\nreturning id as message_id;",
+        "options": {
+          "queryReplacement": "={{ $json.office_id }}, {{ $json.conversation_id }}, {{ $json.reply }}, {{ JSON.stringify($json.ai_meta) }}"
+        }
+      },
+      "id": "d9000000-0000-4000-8000-000000000008",
+      "name": "Gravar linha em messages (o WA 03 envia)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1440,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.apply_agent_effects($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb) as effects;",
+        "options": {
+          "queryReplacement": "={{ $json.lead_id }}, {{ $json.conversation_id }}, {{ $json.agent.role }}, {{ JSON.stringify($json.case_data) }}, {{ $json.advance_to }}, {{ $json.advance_reason }}, {{ JSON.stringify($json.intervention) }}, {{ JSON.stringify($json.task) }}, {{ JSON.stringify($json.contract) }}, {{ JSON.stringify($json.briefing) }}"
+        }
+      },
+      "id": "d9000000-0000-4000-8000-000000000009",
+      "name": "Efeitos — autor IA",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1440,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.agendamento_mark_done($1::uuid, 'realizado', $2::uuid) as task;",
+        "options": {
+          "queryReplacement": "={{ $('Interpretar resposta').item.json.task_id }}, {{ $json.message_id }}"
+        }
+      },
+      "id": "d9000000-0000-4000-8000-000000000010",
+      "name": "Marcar agendamento como realizado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1680,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 5 min": {
+      "main": [
+        [
+          {
+            "node": "Escalar agendamentos com a conversa assumida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalar agendamentos com a conversa assumida": {
+      "main": [
+        [
+          {
+            "node": "Agendamentos vencidos (conversa com a IA)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agendamentos vencidos (conversa com a IA)": {
+      "main": [
+        [
+          {
+            "node": "Agente do lead + contexto + dossiê",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente do lead + contexto + dossiê": {
+      "main": [
+        [
+          {
+            "node": "Agente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente": {
+      "main": [
+        [
+          {
+            "node": "Interpretar resposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar resposta": {
+      "main": [
+        [
+          {
+            "node": "Gravar linha em messages (o WA 03 envia)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Efeitos — autor IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar linha em messages (o WA 03 envia)": {
+      "main": [
+        [
+          {
+            "node": "Marcar agendamento como realizado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Modelo (Anthropic)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agente",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "notes": "Gatilho: a cada 5 min. 1) agendamentos_escalar(): agendamento vencido com a conversa assumida pela equipe (ou com intervenção aberta) vira intervenção 'agendamento' para a equipe (tasks.escalada_em marca para não repetir). 2) agendamentos_due(): vencidos com a conversa ainda com a IA, lead não pausado nem encerrado. Para cada um roda o agente do lead (agent_config_full_lead, mesma saída JSON do WA 02) com a instrução 'RETOMADA AGENDADA: {descrição}', grava a resposta em messages (linha primeiro; o WA 03 envia pelo provedor ativo), aplica os efeitos com autor IA e chama agendamento_mark_done(task, 'realizado') — evento agendamento_retomado. O agente cria agendamentos pelo campo task (com due_at) do apply_agent_effects. Credenciais: Supabase (service_role) e Anthropic. Env: LLM_PRICE_IN_PER_MTOK / LLM_PRICE_OUT_PER_MTOK."
+  }
+}

@@ -376,7 +376,8 @@ begin
          '{"title":"Retomar amanhã às 09:00","description":"Faltam 3 perguntas da varredura de teses","due_at":"2030-01-01T12:00:00Z"}'::jsonb);
   assert r ? 'task_id', 'agente cria tarefa';
   assert (select created_by_actor from public.tasks where id = (r->>'task_id')::uuid) = 'ia', 'tarefa com autor IA';
-  assert (select situacao from public.v_tasks where id = (r->>'task_id')::uuid) = 'pendente', 'tarefa pendente';
+  assert (select situacao from public.v_tasks where id = (r->>'task_id')::uuid) = 'agendado', 'retorno combinado vira agendamento (015)';
+  assert (select kind from public.tasks where id = (r->>'task_id')::uuid) = 'agendamento', 'kind agendamento';
   assert (select count(*) from public.case_events where type = 'task_created' and actor = 'ia' and lead_id = v_lead) = 1, 'evento task_created pela IA';
 end $$;
 set role authenticated;
