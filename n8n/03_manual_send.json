@@ -89,17 +89,17 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "select m.id as message_id, m.body, m.template, ct.wa_id, wn.phone_number_id, s.decrypted_secret as token\nfrom public.messages m\njoin public.conversations c on c.id = m.conversation_id\njoin public.contacts ct on ct.id = c.contact_id\njoin public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id\nleft join vault.decrypted_secrets s on s.name = wn.token_secret_name\nwhere m.id = $1 and m.status = 'pending';",
+        "query": "select * from public.mensageria_destino($1);",
         "options": {
           "queryReplacement": "={{ $json.body.record.id }}"
         }
       },
       "id": "c3000000-0000-4000-8000-000000000003",
-      "name": "Destino + token do Vault",
+      "name": "Destino + provedor + token do Vault",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        480,
+        420,
         -100
       ],
       "credentials": {
@@ -132,8 +132,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        720,
-        -100
+        840,
+        -200
       ],
       "continueOnFail": true
     },
@@ -142,7 +142,7 @@
         "operation": "executeQuery",
         "query": "update public.messages\n   set status = case when $2 is null then 'failed' else 'sent' end,\n       wa_message_id = $2,\n       error = $3\n where id = $1;",
         "options": {
-          "queryReplacement": "={{ $('Destino + token do Vault').item.json.message_id }}, {{ $json.messages?.[0]?.id ?? null }}, {{ $json.error ? JSON.stringify($json.error).slice(0, 500) : null }}"
+          "queryReplacement": "={{ $('Destino + provedor + token do Vault').item.json.message_id }}, {{ $json.messages?.[0]?.id ?? null }}, {{ $json.error ? JSON.stringify($json.error).slice(0, 500) : null }}"
         }
       },
       "id": "c3000000-0000-4000-8000-000000000005",
@@ -150,8 +150,119 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        960,
+        1080,
+        -200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "meta_whatsapp",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "WhatsApp Cloud"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "datacrazy",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Datacrazy"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Outro"
+        }
+      },
+      "id": "e3000000-0000-4000-8000-000000000101",
+      "name": "Provedor de mensageria",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        600,
         -100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.message_mark_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ $json.message_id }}, Envio pelo Datacrazy ainda não implementado: falta a documentação da API (ver README, P3)."
+        }
+      },
+      "id": "e3000000-0000-4000-8000-000000000102",
+      "name": "Datacrazy: envio pendente (marca falha)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        840,
+        60
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.message_mark_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ $json.message_id }}, Escritório sem mensageria ativa (cadastre o WhatsApp Cloud em Configurações → Integrações)."
+        }
+      },
+      "id": "e3000000-0000-4000-8000-000000000103",
+      "name": "Sem provedor (marca falha)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        840,
+        200
       ],
       "credentials": {
         "postgres": {
@@ -173,17 +284,6 @@
         ]
       ]
     },
-    "Destino + token do Vault": {
-      "main": [
-        [
-          {
-            "node": "Graph API: enviar",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Graph API: enviar": {
       "main": [
         [
@@ -199,12 +299,48 @@
       "main": [
         [
           {
-            "node": "Destino + token do Vault",
+            "node": "Destino + provedor + token do Vault",
             "type": "main",
             "index": 0
           }
         ],
         []
+      ]
+    },
+    "Destino + provedor + token do Vault": {
+      "main": [
+        [
+          {
+            "node": "Provedor de mensageria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Provedor de mensageria": {
+      "main": [
+        [
+          {
+            "node": "Graph API: enviar",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Datacrazy: envio pendente (marca falha)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sem provedor (marca falha)",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
@@ -212,6 +348,6 @@
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "No Supabase: Database > Webhooks > nova: tabela public.messages, evento INSERT, URL = <n8n>/webhook/supabase/messages, header x-webhook-secret = SUPABASE_WEBHOOK_SECRET (env do n8n). A UI nunca chama a Graph API: ela só cria a linha (send_manual_message). Desde a 011 também envia mensagens com sender = sistema (link do contrato, régua de follow-up): elas não pausam a IA. Se messages.template estiver preenchido ({name, language:{code}, components}), envia como template (janela de 24h fechada); senão, texto livre. 015: envia também as mensagens da IA (sender = ia): o WA 02 e o AG 09 só gravam a linha; todo envio sai por aqui."
+    "notes": "No Supabase: Database > Webhooks > nova: tabela public.messages, evento INSERT, URL = <n8n>/webhook/supabase/messages, header x-webhook-secret = SUPABASE_WEBHOOK_SECRET (env do n8n). A UI nunca chama a Graph API: ela só cria a linha (send_manual_message). Desde a 011 também envia mensagens com sender = sistema (link do contrato, régua de follow-up): elas não pausam a IA. Se messages.template estiver preenchido ({name, language:{code}, components}), envia como template (janela de 24h fechada); senão, texto livre. 015: envia também as mensagens da IA (sender = ia): o WA 02 e o AG 09 só gravam a linha; todo envio sai por aqui. P3: mensageria_destino() devolve o provedor ativo do escritório (um por vez; sem integração ativa vale o número do WhatsApp Cloud) e o segredo do Vault. Switch por provedor: WhatsApp Cloud envia pela Graph API; Datacrazy ainda não tem envio (a documentação oficial não pôde ser consultada nesta sessão) e a linha é marcada como falha com o motivo, para não ficar presa em pending."
   }
 }

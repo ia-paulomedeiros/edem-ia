@@ -751,6 +751,84 @@
         3360,
         -420
       ]
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body?.provider_mensageria ?? $json.query?.provider_mensageria ?? 'meta_whatsapp' }}",
+                    "rightValue": "meta_whatsapp",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "WhatsApp Cloud"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body?.provider_mensageria ?? $json.query?.provider_mensageria ?? 'meta_whatsapp' }}",
+                    "rightValue": "datacrazy",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Datacrazy"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Outro"
+        }
+      },
+      "id": "c2000000-0000-4000-8000-000000000201",
+      "name": "Provedor da mensageria (entrada)",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        120,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Datacrazy: normalizador pendente. Precisa do formato oficial do webhook de mensagem recebida (ver README, P3).\n// Quando existir, este nó devolve os mesmos itens do 'Extrair itens' (kind, phone_number_id/identificador do canal, wa_id, name, wa_message_id, body, media, ts)\n// e o resto do fluxo (ingest_inbound, agente, efeitos) não muda.\nreturn [];"
+      },
+      "id": "c2000000-0000-4000-8000-000000000202",
+      "name": "Normalizar Datacrazy (pendente)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        -300
+      ]
     }
   ],
   "connections": {
@@ -758,7 +836,7 @@
       "main": [
         [
           {
-            "node": "Extrair itens",
+            "node": "Provedor da mensageria (entrada)",
             "type": "main",
             "index": 0
           }
@@ -1084,13 +1162,43 @@
           }
         ]
       ]
+    },
+    "Provedor da mensageria (entrada)": {
+      "main": [
+        [
+          {
+            "node": "Extrair itens",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalizar Datacrazy (pendente)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Normalizar Datacrazy (pendente)": {
+      "main": [
+        [
+          {
+            "node": "É status de entrega?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "Credencial Postgres = connection string do Supabase com service_role (bypassa RLS; só o n8n usa). Env: LLM_PRICE_IN_PER_MTOK, LLM_PRICE_OUT_PER_MTOK para o custo em ai_meta. O prompt de cada agente vem de public.agents.system_prompt (pendência: conteúdo). Mídia recebida: baixar via /{media_id} e subir no bucket 'provas' fica para o Sprint 3. Áudio (013): antes de chamar o agente, baixa a mídia da Meta e transcreve com o Whisper (chave da integração openai_whisper; sem chave, o agente recebe o áudio sem texto e pede para repetir). A transcrição vira o body da mensagem e fica em media.transcript. O prompt de cada agente vem de agent_config_full() com {{agent_name}}/{{office_name}}/{{honorarios}}/{{whatsapp_juridico}} resolvidos. 014: o agente é escolhido por lead (agent_config_full_lead: peça em saneamento → Saneador; persona do escritório entra como {{agent_name}}; métricas comerciais e taxa entram em {{proposta_honorarios}}/{{prova_social}}). O dossiê enviado ao modelo inclui etapa, peça atual (status, alerta, documentos) e o bloco escritorio. advance_to aceita 'encerrado' (advance_reason = código de close_reasons) e 'revisao' (Saneador). 015: (a) documentos, imagens e vídeos recebidos: baixa da Graph API, classifica imagem/PDF com o Claude (rg, cnh, cpf, ctps, holerite, comprovante_pix, extrato_fgts, trct, atestado, laudo, print_conversa, foto, outro), sobe em provas/<office>/<lead>/<message_id>.<ext> pela API do Storage (credencial 'Supabase API (service_role)', env SUPABASE_URL) e chama ingest_media(), que cria a prova (evidences, status recebida) e o evento document_received com o agente do lead; o n8n não faz insert direto. Se a subida falhar, a prova não é criada e o agente responde normalmente. (b) Envio: este fluxo só grava a resposta em messages (status pending); o WA 03 (Database Webhook em messages) envia toda linha pendente, da IA inclusive, pelo provedor ativo."
+    "notes": "Credencial Postgres = connection string do Supabase com service_role (bypassa RLS; só o n8n usa). Env: LLM_PRICE_IN_PER_MTOK, LLM_PRICE_OUT_PER_MTOK para o custo em ai_meta. O prompt de cada agente vem de public.agents.system_prompt (pendência: conteúdo). Mídia recebida: baixar via /{media_id} e subir no bucket 'provas' fica para o Sprint 3. Áudio (013): antes de chamar o agente, baixa a mídia da Meta e transcreve com o Whisper (chave da integração openai_whisper; sem chave, o agente recebe o áudio sem texto e pede para repetir). A transcrição vira o body da mensagem e fica em media.transcript. O prompt de cada agente vem de agent_config_full() com {{agent_name}}/{{office_name}}/{{honorarios}}/{{whatsapp_juridico}} resolvidos. 014: o agente é escolhido por lead (agent_config_full_lead: peça em saneamento → Saneador; persona do escritório entra como {{agent_name}}; métricas comerciais e taxa entram em {{proposta_honorarios}}/{{prova_social}}). O dossiê enviado ao modelo inclui etapa, peça atual (status, alerta, documentos) e o bloco escritorio. advance_to aceita 'encerrado' (advance_reason = código de close_reasons) e 'revisao' (Saneador). 015: (a) documentos, imagens e vídeos recebidos: baixa da Graph API, classifica imagem/PDF com o Claude (rg, cnh, cpf, ctps, holerite, comprovante_pix, extrato_fgts, trct, atestado, laudo, print_conversa, foto, outro), sobe em provas/<office>/<lead>/<message_id>.<ext> pela API do Storage (credencial 'Supabase API (service_role)', env SUPABASE_URL) e chama ingest_media(), que cria a prova (evidences, status recebida) e o evento document_received com o agente do lead; o n8n não faz insert direto. Se a subida falhar, a prova não é criada e o agente responde normalmente. (b) Envio: este fluxo só grava a resposta em messages (status pending); o WA 03 (Database Webhook em messages) envia toda linha pendente, da IA inclusive, pelo provedor ativo. P3: o corpo (ou a query) pode trazer provider_mensageria; sem ele é WhatsApp Cloud. O ramo Datacrazy está ligado mas o normalizador ainda devolve vazio: falta o formato oficial do webhook."
   },
   "notes": ""
 }

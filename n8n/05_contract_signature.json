@@ -373,6 +373,162 @@
           "name": "Supabase (service_role)"
         }
       }
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Dados do contrato + token do provedor').item.json.provider }}",
+                    "rightValue": "autentique",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Autentique"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Dados do contrato + token do provedor').item.json.provider }}",
+                    "rightValue": "zapsign",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ZapSign"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Dados do contrato + token do provedor').item.json.provider }}",
+                    "rightValue": "clicksign",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Clicksign"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Outro"
+        }
+      },
+      "id": "e5000000-0000-4000-8000-000000000101",
+      "name": "Provedor de assinatura",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1080,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.contract_mark_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ $('Dados do contrato + token do provedor').item.json.contract_id }}, ZapSign: integração ainda não implementada (TODO no n8n 05). Use a assinatura manual ou ative a Autentique."
+        }
+      },
+      "id": "e5000000-0000-4000-8000-000000000102",
+      "name": "ZapSign (TODO)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1320,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.contract_mark_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ $('Dados do contrato + token do provedor').item.json.contract_id }}, Clicksign: integração ainda não implementada (TODO no n8n 05). Use a assinatura manual ou ative a Autentique."
+        }
+      },
+      "id": "e5000000-0000-4000-8000-000000000103",
+      "name": "Clicksign (TODO)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1320,
+        140
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.contract_mark_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ $('Dados do contrato + token do provedor').item.json.contract_id }}, Provedor de assinatura desconhecido: integração ainda não implementada (TODO no n8n 05). Use a assinatura manual ou ative a Autentique."
+        }
+      },
+      "id": "e5000000-0000-4000-8000-000000000104",
+      "name": "Provedor desconhecido",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1320,
+        280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
     }
   ],
   "connections": {
@@ -425,7 +581,7 @@
       "main": [
         [
           {
-            "node": "Montar createDocument",
+            "node": "Provedor de assinatura",
             "type": "main",
             "index": 0
           }
@@ -505,12 +661,44 @@
         ],
         []
       ]
+    },
+    "Provedor de assinatura": {
+      "main": [
+        [
+          {
+            "node": "Montar createDocument",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ZapSign (TODO)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clicksign (TODO)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provedor desconhecido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "Fluxo 1: Database Webhook do Supabase em public.contracts (INSERT e UPDATE) → quando status = enviado e sem signature_ref, busca contract_fill_data() + modelo HTML + token do provedor ativo (Vault), preenche, converte em PDF no Gotenberg (env GOTENBERG_URL, container docker gotenberg/gotenberg) e cria o documento na Autentique (GraphQL v2, upload multipart, signatário por WhatsApp). Grava signature_ref e sign_url com contract_mark_sent() e insere uma mensagem do sistema com o link (o WA 03 envia). Fluxo 2: webhook da Autentique (configurar em https://painel.autentique.com.br → Integrações → Webhooks apontando para <n8n>/webhook/autentique/webhook) → contract_mark_signed(ref, pdf) → o banco avança para briefing e o lead recebe a mensagem de boas-vindas à entrevista. Formato da mutation e do webhook escritos de memória: confirmar na primeira execução (falha fica em contracts.provider_payload.error). Outros provedores (ZapSign, Clicksign): trocar os nós 'Montar createDocument' e 'Autentique: createDocument'; o banco não muda."
+    "notes": "Fluxo 1: Database Webhook do Supabase em public.contracts (INSERT e UPDATE) → quando status = enviado e sem signature_ref, busca contract_fill_data() + modelo HTML + token do provedor ativo (Vault), preenche, converte em PDF no Gotenberg (env GOTENBERG_URL, container docker gotenberg/gotenberg) e cria o documento na Autentique (GraphQL v2, upload multipart, signatário por WhatsApp). Grava signature_ref e sign_url com contract_mark_sent() e insere uma mensagem do sistema com o link (o WA 03 envia). Fluxo 2: webhook da Autentique (configurar em https://painel.autentique.com.br → Integrações → Webhooks apontando para <n8n>/webhook/autentique/webhook) → contract_mark_signed(ref, pdf) → o banco avança para briefing e o lead recebe a mensagem de boas-vindas à entrevista. Formato da mutation e do webhook escritos de memória: confirmar na primeira execução (falha fica em contracts.provider_payload.error). Outros provedores (ZapSign, Clicksign): trocar os nós 'Montar createDocument' e 'Autentique: createDocument'; o banco não muda. P3: depois do PDF, switch pelo provedor ativo (active_integration 'assinatura'): Autentique segue o fluxo atual; ZapSign e Clicksign são ramos com TODO explícito que registram a falha no contrato (contract_mark_failed) em vez de sumir."
   }
 }

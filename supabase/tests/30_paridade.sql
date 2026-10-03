@@ -574,6 +574,33 @@ begin
   exception when others then assert sqlerrm like 'a peça só é gerada depois%', sqlerrm; end;
 end $$;
 
+-- =============================================================================
+-- P3 · Mensageria e assinatura por provedor
+-- =============================================================================
+do $$
+declare d uuid := 'dddddddd-dddd-dddd-dddd-dddddddddddd'; v uuid; v_msg uuid; r record;
+begin
+  v := pg_temp.novo_lead('5511955550301', 'Lead Provedor');
+  insert into vault.secrets (name, secret) values ('wa_token_office_d', 'TOKEN-META-D') on conflict (name) do nothing;
+  assert public.mensageria_provider(d) = 'meta_whatsapp', 'sem integração ativa: número do WhatsApp Cloud';
+  insert into public.messages (office_id, conversation_id, direction, sender, body, status)
+  select d, c.id, 'out', 'ia', 'Olá!', 'pending' from public.conversations c where c.lead_id = v returning id into v_msg;
+  select * into r from public.mensageria_destino(v_msg);
+  assert r.provider = 'meta_whatsapp' and r.token = 'TOKEN-META-D' and r.phone_number_id = 'PNID-D' and r.wa_id = '5511955550301', 'destino Meta';
+
+  insert into public.integrations (office_id, provider, kind, active) values (d, 'datacrazy', 'mensageria', true);
+  assert public.mensageria_provider(d) = 'datacrazy', 'Datacrazy ativo';
+  select * into r from public.mensageria_destino(v_msg);
+  assert r.provider = 'datacrazy', 'destino Datacrazy';
+  begin
+    insert into public.integrations (office_id, provider, kind, active) values (d, 'meta_whatsapp', 'mensageria', true);
+    raise exception 'duas mensagerias ativas';
+  exception when unique_violation then null; end;
+  perform public.message_mark_failed(v_msg, 'Datacrazy: envio pendente');
+  assert (select status from public.messages where id = v_msg) = 'failed', 'linha marcada como falha com motivo';
+  assert not exists (select 1 from public.mensageria_destino(v_msg)), 'linha que não está pendente não é reenviada';
+end $$;
+
 -- ---------- privilégios 015 e RLS
 reset request.jwt.claim.sub;
 set role authenticated;
@@ -591,6 +618,7 @@ do $$ begin
   assert not has_function_privilege('authenticated', 'public.save_qualification_record(uuid, jsonb, text, jsonb)', 'execute'), 'cálculo só n8n';
   assert not has_function_privilege('authenticated', 'public.piece_generation_claim(int)', 'execute'), 'geração só n8n';
   assert not has_function_privilege('authenticated', 'public.ingest_inbound(text, text, text, text, text, jsonb, timestamptz)', 'execute'), 'ingestão só n8n';
+  assert not has_function_privilege('authenticated', 'public.mensageria_destino(uuid)', 'execute'), 'destino com token só n8n';
   assert has_function_privilege('authenticated', 'public.ui_finish_collection(uuid)', 'execute') and has_function_privilege('authenticated', 'public.ui_reschedule_agendamento(uuid, timestamptz)', 'execute'), 'RPCs do front';
 end $$;
 reset role; reset request.jwt.claim.sub;

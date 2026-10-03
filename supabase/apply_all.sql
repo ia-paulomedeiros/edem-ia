@@ -8026,3 +8026,57 @@ begin
   end loop;
 end $$;
 
+-- =============================================================================
+-- P3. Mensageria e assinatura por provedor
+-- =============================================================================
+-- Um provedor ativo por tipo (mensageria, assinatura). set_integration já
+-- desligava os outros; agora o banco garante.
+update public.integrations i set active = false
+ where i.active and i.kind in ('mensageria','assinatura')
+   and exists (select 1 from public.integrations j where j.office_id = i.office_id and j.kind = i.kind and j.active
+                 and (j.updated_at > i.updated_at or (j.updated_at = i.updated_at and j.id > i.id)));
+create unique index if not exists integrations_um_ativo_por_tipo
+  on public.integrations (office_id, kind) where active and kind in ('mensageria','assinatura');
+
+-- Provedor de mensageria do escritório. Sem integração ativa, o número do
+-- WhatsApp Cloud cadastrado continua valendo (comportamento até a 014).
+create or replace function public.mensageria_provider(p_office uuid)
+returns text language sql stable set search_path = public as $$
+  select coalesce(public.active_integration(p_office, 'mensageria'),
+                  case when exists (select 1 from public.whatsapp_numbers w where w.office_id = p_office and w.active) then 'meta_whatsapp' end);
+$$;
+
+-- Tudo que o WA 03 precisa para enviar uma linha pendente, já com o provedor.
+-- O segredo sai do Vault e nunca volta para o front (só service_role executa).
+create or replace function public.mensageria_destino(p_message uuid)
+returns table (message_id uuid, office_id uuid, provider text, body text, template jsonb, wa_id text, phone_number_id text,
+               token text, provider_config jsonb)
+language sql stable security definer set search_path = public as $$
+  select m.id, m.office_id, public.mensageria_provider(m.office_id), m.body, m.template, ct.wa_id, wn.phone_number_id,
+         case public.mensageria_provider(m.office_id)
+           when 'meta_whatsapp' then (select s.decrypted_secret from vault.decrypted_secrets s where s.name = wn.token_secret_name)
+           else public.integration_secret(m.office_id, public.mensageria_provider(m.office_id)) end,
+         (select i.config from public.integrations i where i.office_id = m.office_id and i.provider = public.mensageria_provider(m.office_id))
+  from public.messages m
+  join public.conversations c on c.id = m.conversation_id
+  join public.contacts ct on ct.id = c.contact_id
+  left join public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id
+  where m.id = p_message and m.status = 'pending' and m.direction = 'out';
+$$;
+
+-- Marca uma linha como falha com o motivo (provedor sem envio implementado etc.).
+create or replace function public.message_mark_failed(p_message uuid, p_error text)
+returns void language sql security definer set search_path = public as $$
+  update public.messages set status = 'failed', error = left(p_error, 500) where id = p_message and status = 'pending';
+$$;
+
+grant execute on function public.mensageria_provider(uuid) to authenticated;
+do $$
+declare f text;
+begin
+  foreach f in array array['public.mensageria_destino(uuid)', 'public.message_mark_failed(uuid, text)'] loop
+    execute format('revoke execute on function %s from public, anon, authenticated', f);
+    execute format('grant execute on function %s to service_role', f);
+  end loop;
+end $$;
+
