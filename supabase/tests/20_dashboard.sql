@@ -18,6 +18,12 @@ begin
   assert (select count(*) from public.contracts where status = 'assinado' and faixa is not null and valor_causa is not null) > 0, 'contratos assinados com faixa e valor';
   assert (select count(*) from public.case_events where type = 'contract_signed' and actor = 'sistema') > 0, 'evento contract_signed';
   assert (select count(*) from public.leads l join public.contracts k on k.lead_id = l.id and k.status = 'assinado' where public.phase_order(l.phase) < public.phase_order('briefing')) = 0, 'assinado => pelo menos briefing';
+  -- 014/015 no seed
+  assert (select count(*) from public.qualification_records) > 0, 'seed: cálculo versionado';
+  assert (select count(*) from public.evidences where origem = 'whatsapp' and doc_tipo is not null) > 0, 'seed: documentos recebidos';
+  assert (select count(*) from public.agents where office_id = 'cccccccc-cccc-cccc-cccc-cccccccccccc' and persona_nome = 'Fernanda') = 3, 'seed: Closer com persona';
+  assert (select count(*) from public.leads where closed_code is not null and closed_kind in ('inviavel','insanavel')) = (select count(*) from public.leads where phase = 'encerrado'), 'seed: encerrados com motivo do catálogo';
+  assert not exists (select 1 from public.contacts where wa_id like '5500%' and ((uf = 'SP' and cidade not in ('São Paulo','Campinas','Santo André')) or (uf = 'BA' and cidade <> 'Salvador'))), 'seed: cidade coerente com a UF';
 end $$;
 
 set role authenticated;

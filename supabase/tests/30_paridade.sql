@@ -619,6 +619,10 @@ do $$ begin
   assert not has_function_privilege('authenticated', 'public.piece_generation_claim(int)', 'execute'), 'geração só n8n';
   assert not has_function_privilege('authenticated', 'public.ingest_inbound(text, text, text, text, text, jsonb, timestamptz)', 'execute'), 'ingestão só n8n';
   assert not has_function_privilege('authenticated', 'public.mensageria_destino(uuid)', 'execute'), 'destino com token só n8n';
+  assert (select count(*) from public.intervention_outcomes()) = 9
+     and not exists (select 1 from public.intervention_outcomes() o
+                     where not pg_get_constraintdef((select oid from pg_constraint where conname = 'human_interventions_outcome_check')) like '%''' || o.codigo || '''%'),
+     'catálogo de desfechos = constraint';
   assert has_function_privilege('authenticated', 'public.ui_finish_collection(uuid)', 'execute') and has_function_privilege('authenticated', 'public.ui_reschedule_agendamento(uuid, timestamptz)', 'execute'), 'RPCs do front';
 end $$;
 reset role; reset request.jwt.claim.sub;

@@ -970,3 +970,21 @@ begin
     execute format('grant execute on function %s to service_role', f);
   end loop;
 end $$;
+
+-- Títulos dos desfechos da fila (Histórico de tarefas): os mesmos códigos da
+-- constraint human_interventions_outcome_check, para a UI não fixar lista.
+create or replace function public.intervention_outcomes()
+returns table (ordem int, codigo text, titulo text)
+language sql immutable set search_path = public as $$
+  values
+    (1, 'sanado',                'Sanado'),
+    (2, 'cliente_retomado',      'Cliente retomado'),
+    (3, 'reativado_para_agente', 'Reativado para o agente'),
+    (4, 'assumido_pelo_humano',  'Assumido pelo humano'),
+    (5, 'follow_up_agendado',    'Follow-up agendado'),
+    (6, 'cliente_perdido',       'Cliente perdido'),
+    (7, 'tarefa_cancelada',      'Tarefa cancelada'),
+    (8, 'outro',                 'Outro'),
+    (9, 'nao_informada',         'Não informada');
+$$;
+grant execute on function public.intervention_outcomes() to authenticated;

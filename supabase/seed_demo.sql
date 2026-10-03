@@ -6,7 +6,7 @@
 -- assinados espalhados pelos dias, UFs variadas e alguns encerrados.
 -- Tudo marcado com wa_id começando em '5500' para poder apagar depois.
 --
--- Rodar no SQL Editor depois de 001..011. Pode rodar mais de uma vez (apaga
+-- Rodar no SQL Editor depois de 001..015. Pode rodar mais de uma vez (apaga
 -- e recria o demo). Para remover: rode só o bloco "LIMPEZA".
 -- =============================================================================
 
@@ -31,6 +31,7 @@ declare
   v_salario numeric;
   v_fase public.case_phase;
   v_etapa text; v_hora time; v_task_dia date;
+  v_iv text[]; v_pick int;
   v_ufs text[] := array['SP','SP','SP','SP','SP','RJ','RJ','BA','BA','PR','PR','ES','MG','PE','RS'];
   v_nomes text[] := array['Ana','Bruno','Carla','Diego','Elaine','Fábio','Gisele','Henrique','Isabela','João','Karina','Leandro','Marina','Nelson','Olívia','Paulo','Renata','Sérgio','Tatiane','Vinícius'];
   v_sobren text[] := array['Silva','Souza','Oliveira','Santos','Pereira','Lima','Costa','Ferreira','Almeida','Rocha'];
@@ -52,7 +53,9 @@ begin
 
     insert into public.contacts (office_id, wa_id, name, uf, cidade, cpf, email, nascimento, estado_civil, nacionalidade, endereco, cep)
     values (v_office, '5500' || lpad(i::text, 9, '0'), v_nome, v_uf,
-            (array['São Paulo','Campinas','Rio de Janeiro','Salvador','Curitiba','Belo Horizonte'])[1 + (i % 6)],
+            case v_uf when 'SP' then (array['São Paulo','Campinas','Santo André'])[1 + (i % 3)] when 'RJ' then (array['Rio de Janeiro','Niterói'])[1 + (i % 2)]
+                      when 'BA' then 'Salvador' when 'PR' then 'Curitiba' when 'ES' then 'Vitória' when 'MG' then 'Belo Horizonte'
+                      when 'PE' then 'Recife' when 'RS' then 'Porto Alegre' end,
             lpad((100000000 + i * 7919)::text, 9, '0') || '-' || lpad((i * 13 % 100)::text, 2, '0'),
             lower(replace(v_nome, ' ', '.')) || '@exemplo.com', date '1975-01-01' + (i * 211), (array['Solteiro(a)','Casado(a)','Divorciado(a)'])[1 + (i % 3)],
             'brasileiro(a)', 'Rua ' || chr(65 + (i % 26)) || ', ' || (100 + i * 3)::text || ', Centro', lpad((10000000 + i * 137)::text, 8, '0'))
@@ -105,8 +108,10 @@ begin
            paused = i % 15 = 0, paused_at = case when i % 15 = 0 then now() - interval '1 day' end, retorno_em = case when i % 15 = 0 then now() + interval '3 days' end
      where id = v_lead;
     if random() < 0.12 then
-      update public.leads set closed_reason = (array['Sem resposta / não atende mais','Fora do escopo (não é trabalhista)','Já tem advogado','Prescrito'])[1 + (i % 4)] where id = v_lead;
-      perform public.advance_phase(v_lead, 'encerrado', 'ia', null, 'qualificacao', 'fora do escopo');
+      -- encerrado com motivo do catálogo (Finalizados: Inviável / Insanável)
+      v_fase := 'encerrado';
+      perform public.close_lead_with_reason(v_lead, (array['sem_resposta','sem_caso','cliente_desistiu','prescrito','servidor_publico'])[1 + (i % 5)],
+                                            null, null, 'ia', null, 'qualificacao');
     else
       v_fase := v_fases[1 + (i % 12)];
       perform public.advance_phase(v_lead, v_fase, 'ia', null, public.agent_for_phase(v_fase), 'demo');
@@ -180,12 +185,29 @@ begin
 
     -- intervenções: ~35% dos leads; a maioria resolvida com desfecho e responsável
     if random() < 0.35 then
-      perform public.request_intervention(v_lead, v_conv,
-        (array['agendamento','caso_escalado','follow_up_esgotado','seguir_conversa','contrato_nao_assinado_24h','ia_sem_resposta','duvida_juridica','cliente_ja_existente','saneamento_juridico','caso_parado','spam'])[1 + (random()*10)::int],
-        (array['Contrato pendente >24h','Caso parado >48h','Retorno combinado para continuar o cadastro','IA não respondeu há 30+ min','Corrigir peça: revisor devolveu','Cliente existente chegou no número comercial','Escalado para humano pelo agente','Lead sem atividade >96h'])[1 + (random()*7)::int],
-        1 + (random()*3)::int, 'ia',
-        (array['recepcao','qualificacao','provas','calculo','contrato'])[1 + (random()*4)::int],
-        (array['Cliente pediu para retomar no dia seguinte.', 'Revisor devolveu a peça para correção. Veja a observação no detalhe.', 'Verificar lead: IA travada há +30 min.', 'Cliente disse que já é atendido pelo escritório e perguntou pelo andamento.', null, null])[1 + (random()*5)::int],
+      -- categoria, motivo e nota coerentes com a fase do lead
+      v_iv := case
+        when v_fase in ('triagem','qualificacao') then array[
+          array['seguir_conversa', 'Caso parado >48h', 'Lead parou de responder no meio da qualificação.'],
+          array['agendamento', 'Retorno combinado para continuar o cadastro', 'Cliente pediu para retomar no dia seguinte.'],
+          array['ia_sem_resposta', 'IA não respondeu há 30+ min', 'Verificar lead: IA travada há +30 min.'],
+          array['cliente_ja_existente', 'Cliente já existente', 'Cliente disse que já é atendido pelo escritório e perguntou pelo andamento.']]
+        when v_fase = 'contrato' then array[
+          array['contrato_nao_assinado_24h', 'Contrato pendente >24h', 'Link de assinatura enviado ontem e ainda não assinado.'],
+          array['follow_up_esgotado', 'Follow-up esgotado (3 tentativas sem resposta)', 'Régua automática concluída sem resposta do lead.']]
+        when v_fase in ('briefing','calculo') then array[
+          array['agendamento', 'Retomar a entrevista', 'Cliente pediu para continuar a entrevista depois das 18h.'],
+          array['duvida_juridica', 'Dúvida jurídica na entrevista', 'Cliente perguntou sobre estabilidade depois de acidente; precisa de advogado.']]
+        when v_fase = 'provas' then array[
+          array['saneamento_juridico', 'Documento essencial em falta', 'A empresa fechou e o cliente não tem a CTPS digital.'],
+          array['caso_parado', 'Caso parado >48h', 'Cliente parou de enviar os documentos.']]
+        when v_fase = 'peca' then array[
+          array['saneamento_juridico', 'Corrigir peça: revisor devolveu', 'Revisor devolveu a peça para correção. Veja a observação no detalhe.']]
+        else array[
+          array['spam', 'Mensagem sem relação com caso', 'Contato enviou propaganda no número comercial.']] end;
+      v_pick := 1 + floor(random() * array_length(v_iv, 1))::int;
+      perform public.request_intervention(v_lead, v_conv, v_iv[v_pick][1], v_iv[v_pick][2],
+        1 + (random()*3)::int, 'ia', public.agent_for_phase(v_fase), v_iv[v_pick][3],
         case when random() < 0.2 then array['fragil'] else '{}'::text[] end);
       update public.human_interventions h
          set created_at = v_dia + time '10:00', calls_count = (random() * 2)::int
@@ -262,6 +284,69 @@ begin
               now() - (random() * interval '300 days'));
     end loop;
   end loop;
+end $$;
+
+-- ---------- 014/015: persona, métricas da Empresa, cálculo versionado, documentos recebidos, agendamentos
+do $$
+declare v_office uuid; r record; n int := 0;
+begin
+  select id into v_office from public.offices order by created_at limit 1;
+
+  -- Empresa: métricas comerciais (taxa de manutenção desligada)
+  update public.offices set
+    volume_processos = coalesce(volume_processos, 1200), clientes_representados = coalesce(clientes_representados, 950),
+    avaliacoes_5_estrelas = coalesce(avaliacoes_5_estrelas, 310), plataforma_reviews = coalesce(plataforma_reviews, 'Google'),
+    exemplo_honorarios = coalesce(exemplo_honorarios, 'Se você ganhar R$ 20 mil, o escritório fica com R$ 6 mil e o resto é seu.')
+  where id = v_office;
+
+  -- Closer com nome de pessoa (override do escritório; o prompt continua o global)
+  insert into public.agents (office_id, role, name, description, model, temperature, tools, enabled, persona_nome)
+  select v_office, g.role, g.name, g.description, g.model, g.temperature, g.tools, g.enabled,
+         case when g.role in ('recepcao','qualificacao','contrato') then 'Fernanda' when g.role = 'provas' then 'Lucas' end
+  from public.agents g where g.office_id is null and g.role in ('recepcao','qualificacao','contrato','provas')
+  on conflict (coalesce(office_id, '00000000-0000-0000-0000-000000000000'::uuid), role) do update set persona_nome = excluded.persona_nome;
+  insert into public.agent_prompts (agent_id) select id from public.agents where office_id = v_office on conflict do nothing;
+
+  for r in
+    select l.id, l.phase, d.salario, coalesce(q.verbas_total, 8000) as total, i
+    from (select l.*, row_number() over (order by l.created_at) as i from public.leads l
+          join public.contacts c on c.id = l.contact_id where c.wa_id like '5500%' and l.office_id = v_office) l
+    left join public.case_data d on d.lead_id = l.id
+    left join public.lead_qualification q on q.lead_id = l.id
+    where l.phase in ('provas','peca')
+  loop
+    n := n + 1;
+    -- cálculo detalhado (uma versão; alguns com duas)
+    perform public.save_qualification_record(r.id, jsonb_build_object(
+      'dados_base', jsonb_build_object('salario_informado', r.salario, 'salario_registrado', r.salario, 'salario_base_calculo', r.salario,
+                                       'meses_contrato', 18 + (r.i % 30), 'tipo_rescisao', 'sem_justa_causa', 'jornada_relatada', '08h às 19h, 1h de intervalo, sábados até 14h'),
+      'verbas', jsonb_build_array(
+        jsonb_build_object('verba', 'Verbas rescisórias', 'descricao', 'Saldo, aviso, 13º e férias + 1/3', 'base_calculo', 'último salário',
+                           'valor_principal', round(r.total * 0.45), 'reflexos', jsonb_build_object('fgts', round(r.total * 0.036)),
+                           'valor_calculado', round(r.total * 0.5), 'ja_recebido', 0, 'total', round(r.total * 0.5), 'observacao', ''),
+        jsonb_build_object('verba', 'Horas extras', 'descricao', '10h semanais com adicional de 50%', 'base_calculo', 'salário/220',
+                           'valor_principal', round(r.total * 0.35), 'reflexos', jsonb_build_object('fgts', round(r.total * 0.03), 'dsr', round(r.total * 0.05)),
+                           'valor_calculado', round(r.total * 0.5), 'ja_recebido', 0, 'total', round(r.total * 0.5), 'observacao', 'jornada relatada pelo cliente'))),
+      'calculo', '{"demo": true}');
+    if r.i % 3 = 0 then
+      perform public.save_qualification_record(r.id, jsonb_build_object('verbas', jsonb_build_array(
+        jsonb_build_object('verba', 'Verbas rescisórias e horas extras (revisado)', 'total', round(r.total * 1.08)))), 'calculo', '{"demo": true}');
+    end if;
+    -- documentos recebidos pelo WhatsApp (caminho de demo, sem arquivo no bucket)
+    insert into public.evidences (office_id, lead_id, kind, title, storage_path, status, requested_by_actor, doc_tipo, mime_type, size_bytes, origem, agent_role, created_at)
+    values (v_office, r.id, 'foto', 'RG', v_office || '/' || r.id || '/demo-rg.jpg', 'recebida', 'ia', 'rg', 'image/jpeg', 210000, 'whatsapp', 'provas', now() - interval '3 days'),
+           (v_office, r.id, 'documento', 'CTPS', v_office || '/' || r.id || '/demo-ctps.pdf', 'recebida', 'ia', 'ctps', 'application/pdf', 480000, 'whatsapp', 'provas', now() - interval '2 days'),
+           (v_office, r.id, 'foto', 'Comprovante PIX', v_office || '/' || r.id || '/demo-pix.jpg', 'recebida', 'ia', 'comprovante_pix', 'image/jpeg', 150000, 'whatsapp', 'provas', now() - interval '1 day');
+  end loop;
+
+  -- agendamentos: as tarefas criadas pela IA viram agendamentos; parte confirmada, uma cancelada
+  update public.tasks t set kind = 'agendamento', agent_role = coalesce(t.agent_role, 'qualificacao')
+   where t.office_id = v_office and t.created_by_actor = 'ia'
+     and t.lead_id in (select l.id from public.leads l join public.contacts c on c.id = l.contact_id where c.wa_id like '5500%');
+  update public.tasks t set status = 'confirmado'
+   where t.office_id = v_office and t.kind = 'agendamento' and t.status = 'agendado' and t.due_at > now() and extract(minute from t.due_at)::int % 2 = 0;
+  update public.tasks t set status = 'cancelado'
+   where t.id = (select id from public.tasks where office_id = v_office and kind = 'agendamento' and status = 'agendado' order by due_at limit 1);
 end $$;
 
 select 'demo criado' as status, count(*) as leads from public.leads l join public.contacts c on c.id = l.contact_id where c.wa_id like '5500%';

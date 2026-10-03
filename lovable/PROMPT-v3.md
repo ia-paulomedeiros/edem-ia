@@ -530,7 +530,7 @@ o chip sem recarregar.
 **Contexto.** `v_case_cards` (`lead_id, phase, assigned_to, contact_name, contact_phone, empresa,
 prescricao_alerta, prescricao_vencida, prescricao_dias`), `v_legal_cards` (`lead_id, etapa,
 etapa_ordem, status`), `contracts` (`signed_at, valor_causa, faixa`), `contacts.uf/cidade`,
-`profiles.full_name`, `v_intervention_cards` (`lead_id, contact_name, title, category, grupo,
+`profiles.full_name`, `v_intervention_cards` (`lead_id, contact_name, reason, category, grupo,
 priority`), `v_tasks` (`situacao, contact_name, title, due_at`).
 
 **Faça.**

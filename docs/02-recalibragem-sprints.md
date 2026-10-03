@@ -100,13 +100,33 @@ com alerta no card e responsável; o agente marca retornos como tarefas (autor I
 Feito na 011 + `n8n/05`: pedido de envio (UI ou agente) → n8n preenche o modelo HTML, converte em
 PDF, cria o documento na Autentique e manda o link; webhook de assinado → `contract_mark_signed` →
 briefing. Régua de follow-up (`followup_rules`, `followup_due`, `n8n/06`). Ações da intervenção
-(`intervention_actions`). Pendente: mídia recebida no WhatsApp baixada para o bucket `provas`.
+(`intervention_actions`). Mídia recebida no WhatsApp baixada para o bucket `provas`: feito na 015 (n8n 02 + `ingest_media`).
 
-### Sprint 4 — Briefing e peça
+### Sprint 4 — Briefing e peça (plano original)
 Agente de briefing conduz a entrevista e preenche `briefings.answers`; agente de redação monta
 `pieces.content` a partir de `piece_templates` da tese (interno) e dos arquivos de `piece_models`
 (obrigatórios + tese, via `piece_models_for()`); tela de revisão com diff e aprovação por
-advogado (`reviewed_by`), status `protocolada` com número de protocolo.
+advogado (`reviewed_by`), status `protocolada` com número de protocolo. Entregue em partes: briefing
+estruturado (011), revisão/aprovação/protocolo (013) e geração da peça pelos blocos internos (015).
+
+### Sprint 4b — Fluxo do concorrente (feito: `013_fluxo_laquila.sql`)
+Contrato antes de cálculo e provas; quadro de 7 colunas; petição com checklist de revisão,
+aprovação e protocolo; modelos de petição internos (só `platform_admins`); presença digital e
+WhatsApp do jurídico; encerrar com tipo e reabrir para a fase anterior; templates da Meta para a
+régua fora da janela de 24h; CPF validado; áudio transcrito (n8n 02). Pendente: n8n 07 (peça como
+Google Doc com Sincronizar). A geração da peça (n8n 08) saiu na 015.
+### Sprint 4c — Paridade de regras e automações (feito: `014_paridade_regras.sql`, `015_paridade_automacoes.sql`)
+Comparação tela a tela com a Láquila em uso real. Regras (014): faixas de ticket LOW/MID/HIGH
+(2.000 / 30.000 / 80.000), tempo mínimo de vínculo por tipo de saída com exceção de acidente,
+métricas comerciais e taxa de manutenção na proposta do Closer, encerramento por motivo do
+catálogo (Inviável / Insanável), etapa detalhada do lead (`lead_etapa`), agentes com nome de
+pessoa e o Saneador (8º agente, agente por lead), jornada de 5 etapas, Marketing com Claude e
+OpenAI separados. Automações (015 + n8n): documentos do WhatsApp entram no caso (n8n 02 +
+`ingest_media`), agendamentos que a IA retoma (n8n 09), monitores da fila (n8n 10), Calculista
+com qualificação versionada e prescrição calculada no banco (n8n 11), geração da peça pelos
+blocos + teses (n8n 08). Mensageria por provedor com um ativo por vez; o envio de toda mensagem
+sai pelo WA 03. Pendente: Datacrazy (documentação oficial inacessível na sessão em que a 015 foi
+escrita) e ZapSign/Clicksign (ramos com TODO no n8n 05).
 
 ### Sprint 5 — Dashboard, custo e cobrança
 Funil por fase (projeção de `leads.phase`), tempo médio por fase (`case_events`), custo por lead e
@@ -117,15 +137,8 @@ produto) e medição do que for escolhido (escritório, usuário ou volume).
 Nome e domínio (pendência), e-mail transacional, convite de membros. (Cadastro do número da Meta e
 segredo no Vault pelo painel: feito na 008.)
 
-### Sprint 4 — Fluxo do concorrente (`013_fluxo_laquila.sql`)
-Contrato antes de cálculo e provas; quadro de 7 colunas; petição com checklist de revisão,
-aprovação e protocolo; modelos de petição internos (só `platform_admins`); presença digital e
-WhatsApp do jurídico; encerrar com tipo e reabrir para a fase anterior; templates da Meta para a
-régua fora da janela de 24h; CPF validado; áudio transcrito (n8n 02). Pendente: n8n 07 (peça como
-Google Doc com Sincronizar) e n8n 08 (geração da peça pelos blocos + modelos da tese).
-
 ## Pendências de produto (não de código)
 
 - Nome e domínio. Trava identidade visual, e-mail transacional e onboarding.
 - Modelo de cobrança: por escritório, por usuário ou por volume de conversa.
-- Prompts dos sete agentes: v1 na 013 (roteiro do concorrente: recepção → fatos → viabilidade e proposta → dados e contrato → entrevista → viabilidade → coleta → peça). Revisar tom por escritório.
+- Prompts dos oito agentes (o Saneador entrou na 014): v1 na 013 (roteiro do concorrente: recepção → fatos → viabilidade e proposta → dados e contrato → entrevista → viabilidade → coleta → peça). Revisar tom por escritório.
