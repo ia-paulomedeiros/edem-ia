@@ -1,7 +1,7 @@
-# Partes da 014 e da 015
+# Partes da 014, da 015 e da 016
 
-Geradas por `supabase/tools/split_migrations.py` a partir de `014_paridade_regras.sql` e
-`015_paridade_automacoes.sql`. A junção das partes é o arquivo canônico (só mudam linhas em
+Geradas por `supabase/tools/split_migrations.py` a partir de `014_paridade_regras.sql`,
+`015_paridade_automacoes.sql` e `016_placeholders_laquila.sql`. A junção das partes é o arquivo canônico (só mudam linhas em
 branco nas bordas); nunca edite uma parte, edite o canônico e regenere.
 
 Cada parte tem menos de 30 KB, é idempotente e termina com um SELECT de verificação:
@@ -10,7 +10,10 @@ mande o texto.
 
 ## Ordem
 
-`014a → 014b → 014c → 014d → 014e → 015a → 015b → 015c`
+`014a → 014b → 014c → 014d → 014e → 015a → 015b → 015c → 016a → 016b`
+
+Os modelos de petição (`modelos_laquila.sql`, fora do repositório) podem ser rodados antes ou
+depois da 016: a 016 só lê `piece_templates`. Sem modelos, a geração da peça falha com aviso claro.
 
 ## Opção 1 — SQL Editor do Supabase
 
@@ -37,6 +40,8 @@ psql "host=<host> port=5432 dbname=postgres user=postgres.ifxrdywzrtqknyvnxnnp s
   -v ON_ERROR_STOP=1 -f supabase/014_paridade_regras.sql
 psql "host=<host> port=5432 dbname=postgres user=postgres.ifxrdywzrtqknyvnxnnp sslmode=require" \
   -v ON_ERROR_STOP=1 -f supabase/015_paridade_automacoes.sql
+psql "host=<host> port=5432 dbname=postgres user=postgres.ifxrdywzrtqknyvnxnnp sslmode=require" \
+  -v ON_ERROR_STOP=1 -f supabase/016_placeholders_laquila.sql
 ```
 
 (sem senha na linha: o psql pergunta.)

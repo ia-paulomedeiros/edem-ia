@@ -128,6 +128,13 @@ blocos + teses (n8n 08). Mensageria por provedor com um ativo por vez; o envio d
 sai pelo WA 03. Pendente: Datacrazy (documentação oficial inacessível na sessão em que a 015 foi
 escrita) e ZapSign/Clicksign (ramos com TODO no n8n 05).
 
+### Sprint 4d — Modelos de petição da Láquila (feito: `016_placeholders_laquila.sql`)
+Os 47 modelos do escritório (8 blocos obrigatórios + 39 teses) entram em `piece_templates` por um SQL
+fora do repositório (licença a confirmar). Os 133 placeholders deles estão mapeados em
+`piece_placeholders` (fonte, caminho, formato); `piece_fill_context` formata tudo por lead; a peça é
+montada no banco (blocos na ordem + teses do briefing) e o Redator (n8n 08) só preenche os campos de
+IA. O que faltar vira `[PREENCHER: CAMPO]`; nenhum placeholder cru chega à peça.
+
 ### Sprint 5 — Dashboard, custo e cobrança
 Funil por fase (projeção de `leads.phase`), tempo médio por fase (`case_events`), custo por lead e
 por contrato assinado (`lead_acquisition_cost`), taxa do portão. Modelo de cobrança (pendência de

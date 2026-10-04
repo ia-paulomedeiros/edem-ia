@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reproduz o upgrade em produção: banco com 001..013 aplicadas UMA vez e o seed da época
-# (60 leads), e então as partes 014a.. e 015a.. de supabase/partes/, na ordem, como o Paulo
+# (60 leads), e então as partes 014a.., 015a.. e 016a.. de supabase/partes/, na ordem, como o Paulo
 # cola no SQL Editor. Cada parte tem que devolver resultado = OK. Depois reaplica todas
 # (idempotência), roda o seed atual e confere o essencial.
 # Uso: supabase/tests/run_upgrade.sh [conninfo]   ex.: "-h /tmp -p 5434 -U postgres" (PostgreSQL 17)
@@ -29,7 +29,7 @@ $PSQL -d "$DB" -f supabase/tests/fixtures/seed_013.sql -o /dev/null
 echo "estado de produção simulado: 001..013 + seed da 013 ($($PSQL -d "$DB" -Atc 'select count(*) from public.leads') leads)"
 
 apply_parts() {
-  for f in supabase/partes/014*.sql supabase/partes/015*.sql; do
+  for f in supabase/partes/014*.sql supabase/partes/015*.sql supabase/partes/016*.sql; do
     out=$($PSQL -d "$DB" -At -F ' | ' -f "$f" | tail -1)
     case "$out" in
       *"| OK |"*) echo "ok  [$1] $(basename "$f"): $out" ;;
@@ -51,6 +51,8 @@ begin
   assert (select count(*) from public.agents where office_id is null) = 8, '8 agentes';
   assert (select count(*) from public.qualification_records) > 0, 'seed atual rodou depois da 015';
   assert (select count(*) from public.integrations i where i.active and i.kind = 'mensageria') <= 1, 'uma mensageria ativa';
+  assert (select count(*) from public.piece_placeholders where laquila) = 133, '016: 133 placeholders da Láquila';
+  assert (select count(*) from jsonb_object_keys(public.piece_fill_context((select id from public.leads limit 1)))) = (select count(*) from public.piece_placeholders), '016: contexto completo';
 end $$;
 select 'UPGRADE OK' as status, version();
 SQL

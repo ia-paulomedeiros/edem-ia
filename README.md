@@ -31,15 +31,18 @@ Vault) + n8n + WhatsApp Cloud API.
 | Dados de demonstração (60 leads no mês, contratos, custos, empresa, integrações, 47 modelos; desde a 014/015 também persona, métricas, cálculo versionado, documentos e agendamentos) | `supabase/seed_demo.sql` | Testado; reversível |
 | Sprint 4c — paridade de regras com a Láquila: faixas LOW/MID/HIGH, vínculo mínimo por tipo de saída, métricas comerciais e taxa de manutenção (`ui_save_empresa`), encerramento por motivo (Inviável/Insanável), etapa detalhada do lead, agentes com persona + Saneador e agente por lead, jornada de 5 etapas, Marketing Claude/OpenAI, views novas (`v_clientes`, `v_fluxo_cards`, `v_juridico_cards`, `v_fila_leads`, `v_marketing_dia`) | `supabase/014_paridade_regras.sql` + n8n 02/06 | Testada localmente (`run.sh`); aplicar no Supabase |
 | Sprint 4c — automações: documentos do WhatsApp no caso (`ingest_media`), agendamentos que a IA retoma, monitores da fila, Calculista com qualificação versionada, geração da peça, mensageria/assinatura por provedor | `supabase/015_paridade_automacoes.sql` + `n8n/08..11` + n8n 02/03/05 | Testada localmente (`run.sh`); n8n JSON válido; Datacrazy pendente |
+| Sprint 4c — modelos de petição da Láquila: 133 placeholders mapeados para os dados do Edem (`piece_placeholders`), contexto formatado por lead (`piece_fill_context`: datas, R$, extenso), peça montada no banco (blocos obrigatórios + teses) e saneada (o que falta vira `[PREENCHER: CAMPO]`); os textos dos modelos ficam fora do repo | `supabase/016_placeholders_laquila.sql` + n8n 08 | Testada localmente (`run.sh`, PG 16 e 17); aplicar no Supabase |
 | Sprint 4c — prompts de paridade de regras (etapa, persona, Empresa, Finalizados por tipo, Histórico de tarefas, Documentos, Qualificação, Agendamentos, alertas da fila) | `lovable/PROMPT-v4.md` | 7 prompts (14–20) |
 
-"Aplicada e testada" = `supabase/tests/run.sh` roda 001→015 duas vezes num PostgreSQL 16 limpo
-(idempotência) e passa três testes: o smoke (ingestão idempotente, isolamento entre escritórios, trava do
+"Aplicada e testada" = `supabase/tests/run.sh` roda 001→016 duas vezes num PostgreSQL 16 limpo
+(idempotência) e passa quatro testes: o smoke (ingestão idempotente, isolamento entre escritórios, trava do
 takeover, fase com autor, portão, prescrição, fila, efeitos do agente, integrações com Vault, prompts
 invisíveis), o de dashboard (seed de 60 leads, RPCs como membro, marketing e custo por lead) e o de
 paridade (`30_paridade.sql`: faixas, vínculo por tipo de saída, Empresa, motivos de encerramento, etapa em
 cada estado, agente por lead e Saneador, Marketing Claude/OpenAI, documentos, agendamentos, monitores
-idempotentes, Calculista, geração da peça, provedor de mensageria e privilégios).
+idempotentes, Calculista, geração da peça, provedor de mensageria e privilégios) e o de placeholders
+(`40_placeholders.sql`: datas, moeda e extenso preenchidos, campos sem dado viram `[PREENCHER: ...]`, peça
+montada na ordem, nenhum placeholder cru).
 
 Por que existem views novas na 014: o `run.sh` reaplica tudo duas vezes e o Postgres não deixa um
 `create or replace view` tirar colunas; se a 014 acrescentasse colunas em `v_case_cards`,
@@ -65,14 +68,14 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
 
 ## Como aplicar no Supabase
 
-1. SQL Editor: colar `supabase/apply_all.sql` (001..015 juntas) e executar. Ou rodar
+1. SQL Editor: colar `supabase/apply_all.sql` (001..016 juntas) e executar. Ou rodar
    `001_schema.sql`, `002_dominio_juridico.sql`, `003_caso_unico.sql`, `004_dashboard.sql`,
    `005_funil.sql`, `006_dashboard_periodo.sql`, `007_fila.sql`, `008_configuracoes.sql`,
-   `009_marketing.sql`, `010_juridico_agenda.sql`, `011_caso_completo.sql`, `012_fila_por_lead.sql`, `013_fluxo_laquila.sql`, `014_paridade_regras.sql` e `015_paridade_automacoes.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
+   `009_marketing.sql`, `010_juridico_agenda.sql`, `011_caso_completo.sql`, `012_fila_por_lead.sql`, `013_fluxo_laquila.sql`, `014_paridade_regras.sql`, `015_paridade_automacoes.sql` e `016_placeholders_laquila.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
    das individuais (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
    Opcional: `seed_demo.sql` cria 60 leads de demonstração (reversível pelo bloco LIMPEZA).
-   Banco que já tem até a 013 (produção): aplicar a 014 e a 015 pelas partes de
-   `supabase/partes/` (014a..014e, 015a..015c, cada uma < 30 KB e terminando com um SELECT que
+   Banco que já tem até a 013 (produção): aplicar a 014, a 015 e a 016 pelas partes de
+   `supabase/partes/` (014a..014e, 015a..015c, 016a..016b, cada uma < 30 KB e terminando com um SELECT que
    devolve `OK`) ou pelo psql com `supabase/tools/aplicar_partes.sh`. Ver `supabase/partes/LEIA-ME.md`.
 2. Token da Meta: pelo painel, Configurações → Integrações → WhatsApp Cloud API (Meta), que chama
    `set_integration()` e cria o segredo no Vault e o número em `whatsapp_numbers`. Alternativa manual:
@@ -111,7 +114,7 @@ Precisa de um PostgreSQL 16 acessível (não o Supabase de produção: o shim cr
 supabase/tests/run.sh "-h localhost -p 5432 -U postgres"
 ```
 
-Saída esperada: `SMOKE OK`, `DASHBOARD OK` e `PARIDADE OK`.
+Saída esperada: `SMOKE OK`, `DASHBOARD OK`, `PARIDADE OK` e `PLACEHOLDERS OK`.
 
 Upgrade como em produção (001..013 + seed da 013, depois as partes da 014/015 exigindo OK em cada
 uma, reaplicação e seed atual):
@@ -127,7 +130,7 @@ partes com `python3 supabase/tools/split_migrations.py` (o `run_upgrade.sh` falh
 
 ```
 docs/       blueprint e recalibragem do backlog
-supabase/   migrations 001..015, apply_all.sql, seed_demo.sql e tests/ (shim + smoke + dashboard + paridade)
+supabase/   migrations 001..016, apply_all.sql, seed_demo.sql, partes/ (014–016 em pedaços < 30 KB), tools/ e tests/
 n8n/        dez workflows exportados (01 verificação, 02 inbound com agente, 03 envio, 04 custos, 05 contrato/assinatura, 06 régua, 08 peça, 09 agendamentos, 10 monitores, 11 Calculista)
 lovable/    prompts de build v1 (monitor), v2 (caso único), v3 (paridade e dashboard) e v4 (paridade de regras)
 ```
@@ -140,3 +143,4 @@ lovable/    prompts de build v1 (monitor), v2 (caso único), v3 (paridade e dash
 - Datacrazy: envio e recebimento ainda não implementados. A documentação oficial (docs.datacrazy.io) é bloqueada pela rede da sessão de desenvolvimento; o WA 02/03 já têm o ramo do provedor esperando os nós.
 - ZapSign e Clicksign: ramos com TODO no n8n 05 (registram a falha no contrato).
 - Modelos de petição visíveis/editáveis pelo escritório (como na Láquila) ou só internos (hoje, 013): decisão do Paulo.
+- Modelos extraídos da Láquila (`modelos_laquila.sql`): quase todos derivam de um modelo-base da plataforma deles. Uso pelo próprio escritório, ok; antes de vender o Edem a outros escritórios, confirmar autoria/licença. O arquivo não entra no repositório (`.gitignore`) nem em seed.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Aplica as partes 014a.. e 015a.. no Supabase pelo psql, na ordem, parando na primeira que
+# Aplica as partes 014a.., 015a.. e 016a.. no Supabase pelo psql, na ordem, parando na primeira que
 # não devolver resultado = OK. A senha é pedida sem eco e não fica no histórico.
 #
 # Uso (na raiz do repositório):
@@ -16,7 +16,7 @@ if [ -z "${PGPASSWORD:-}" ]; then
 fi
 
 psql -v ON_ERROR_STOP=1 -At -c "select 'conectado em ' || current_database() || ' · ' || version()"
-for f in supabase/partes/014*.sql supabase/partes/015*.sql; do
+for f in supabase/partes/014*.sql supabase/partes/015*.sql supabase/partes/016*.sql; do
   out=$(psql -v ON_ERROR_STOP=1 -q -At -F ' | ' -f "$f" | tail -1)
   case "$out" in
     *"| OK |"*) echo "ok  $(basename "$f"): $out" ;;

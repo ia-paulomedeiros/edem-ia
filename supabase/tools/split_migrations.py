@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Divide migrations grandes em partes menores para colar no SQL Editor do Supabase.
 
-As partes são geradas a partir dos arquivos canônicos (014, 015): nunca edite uma parte.
+As partes são geradas a partir dos arquivos canônicos (014, 015, 016): nunca edite uma parte.
 Cada parte corta só entre seções de topo (fora de corpo de função), cabe em ~28 KB, é
 idempotente como o arquivo inteiro e termina com um SELECT que diz se tudo foi criado.
 
@@ -11,7 +11,7 @@ Uso:  python3 supabase/tools/split_migrations.py           # (re)gera supabase/p
 import os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SOURCES = ['014_paridade_regras.sql', '015_paridade_automacoes.sql']
+SOURCES = ['014_paridade_regras.sql', '015_paridade_automacoes.sql', '016_placeholders_laquila.sql']
 OUTDIR = os.path.join(ROOT, 'partes')
 LIMIT = 29_000          # bytes por parte, já com cabeçalho e verificação (o pedido é < 30 KB)
 
@@ -104,7 +104,9 @@ def build():
             tag = f"{base}{chr(ord('a') + k)}"
             body = ''.join(lines[a:b])
 
-            prev = (f"{base}{chr(ord('a') + k - 1)}" if k else ('014 inteira (todas as partes 014*)' if base == '015' else '013'))
+            i_src = SOURCES.index(src)
+            prev = (f"{base}{chr(ord('a') + k - 1)}" if k
+                    else (f"{SOURCES[i_src - 1][:3]} inteira (todas as partes {SOURCES[i_src - 1][:3]}*)" if i_src else '013'))
             head = (f"-- =============================================================================\n"
                     f"-- {tag} — parte {k + 1} de {total} de supabase/{src}\n"
                     f"-- GERADA por supabase/tools/split_migrations.py; não edite (edite o arquivo canônico).\n"

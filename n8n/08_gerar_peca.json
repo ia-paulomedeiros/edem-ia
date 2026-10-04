@@ -45,9 +45,9 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "={{ JSON.stringify({ hoje: $now.setZone('America/Sao_Paulo').toFormat('yyyy-MM-dd'), tese_principal: $json.tese, teses: $json.teses, blocos: $json.blocos, briefing: $json.briefing, qualificacao: $json.qualificacao, evidencias: $json.evidencias, case_data: $json.case_data, cliente: $json.contato, escritorio: $json.escritorio }) }}",
+        "text": "={{ JSON.stringify({ hoje: $now.setZone('America/Sao_Paulo').toFormat('yyyy-MM-dd'), teses: $json.r.teses, campos_para_preencher: $json.r.ia, campos_manuais: $json.r.manual, briefing: $('Peças para gerar (marca como gerando)').item.json.briefing, qualificacao: $('Peças para gerar (marca como gerando)').item.json.qualificacao, evidencias: $('Peças para gerar (marca como gerando)').item.json.evidencias, case_data: $('Peças para gerar (marca como gerando)').item.json.case_data, cliente: $('Peças para gerar (marca como gerando)').item.json.contato }) }}",
         "options": {
-          "systemMessage": "Você é o Redator do escritório: advogado trabalhista brasileiro que redige petições iniciais na Justiça do Trabalho. Recebe os blocos internos do escritório, as teses do caso, a entrevista (briefing), a qualificação (verbas calculadas), as provas recebidas e os dados do cliente e do escritório.\n\nCOMO MONTAR\n- Estrutura: os blocos de kind \"bloco\" na ordem do campo \"ordem\" formam o esqueleto (cabeçalho, síntese do contrato, abertura dos pedidos, liquidação, conciliação, juízo digital, justiça gratuita, fechamento). Os blocos de kind \"tese\" trazem a fundamentação de cada tese: desenvolva cada tese presente com fatos do briefing, fundamentos legais e pedidos específicos, entre a síntese do contrato e a abertura dos pedidos.\n- Preencha todos os {{placeholders}} com os dados: cliente_nome, cliente_cpf, cliente_nacionalidade, cliente_estado_civil, cliente_endereco, cliente_email, cliente_telefone, empresa, empresa_cnpj, cargo, admissao, demissao, salario, tipo_rescisao, cidade (comarca: cidade do escritório se não houver outra), valor_causa (total da qualificação em R$), data_extenso (data de hoje por extenso), escritorio_oab. Dado que não existe: deixe [PREENCHER: o que falta] e liste em pendencias.\n- Pedidos liquidados (art. 840, § 1º, da CLT): cada pedido com o valor da qualificação. A soma é o valor da causa.\n- Não invente fatos, datas, testemunhas ou documentos. Cite só provas que estão em evidencias.\n- Linguagem técnica, objetiva, sem exageros.\n\nQUALIDADE: \"viavel\" quando fatos, provas e cálculo sustentam os pedidos; \"fragil\" quando falta prova essencial, há inconsistência no relato ou o cálculo depende de premissas fortes. Explique em resumo_executivo.\n\nSAÍDA: SOMENTE este JSON, sem texto fora dele:\n{\"content\": \"petição completa em markdown\", \"resumo_executivo\": \"5 a 8 linhas para o revisor: teses, pedidos principais, valor da causa, pontos de atenção\", \"documentos_anexar\": [\"CTPS\", \"Holerites\", ...], \"qualidade\": \"viavel\"|\"fragil\", \"pendencias\": [string]}"
+          "systemMessage": "Você é o Redator do escritório: advogado trabalhista brasileiro. A petição já foi MONTADA pelo sistema a partir dos modelos do escritório (blocos obrigatórios + teses do caso) e os dados objetivos (nomes, datas, salário, valores, valor da causa e extenso) já foram preenchidos pelo banco. Você NÃO reescreve a petição.\n\nSUA TAREFA\n1. Preencher os campos de \"campos_para_preencher\" (cada um tem code, descricao e formato) usando SOMENTE o que está no briefing, na qualificação, nas provas e nos dados do caso. Escreva o texto exato que entra no lugar do campo, no tom técnico da petição. Descrições (DESCRICAO_*) em 1 a 4 frases objetivas, na terceira pessoa (\"o reclamante...\"). Valores em reais como número (ex.: 1234.56). Datas como AAAA-MM-DD.\n2. Se a informação não existir nos dados, devolva null para aquele campo: o sistema marca [PREENCHER: CAMPO] para a equipe. Nunca invente fato, data, valor, nome de empresa ou de testemunha.\n3. \"campos_manuais\" são dados que a equipe precisa conferir (RG, CID, CNAE, CNPJ do sindicato...). Só preencha algum deles se o valor estiver escrito com todas as letras no briefing ou nas provas; senão, não mencione.\n4. Avalie a qualidade: \"viavel\" quando fatos, provas e cálculo sustentam as teses; \"fragil\" quando falta prova essencial, há inconsistência ou muitos campos ficaram sem dado.\n\nSAÍDA: SOMENTE este JSON, sem texto fora dele:\n{\"valores\": {\"CODIGO\": \"texto\" | null, ...}, \"resumo_executivo\": \"5 a 8 linhas para o revisor: teses, pedidos principais, valor da causa, o que ficou [PREENCHER] e pontos de atenção\", \"documentos_anexar\": [\"CTPS\", \"Holerites\", ...], \"qualidade\": \"viavel\"|\"fragil\"}"
         }
       },
       "id": "d0800000-0000-4000-8000-000000000003",
@@ -55,7 +55,7 @@
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
       "position": [
-        480,
+        720,
         0
       ]
     },
@@ -68,7 +68,7 @@
         },
         "options": {
           "temperature": 0.2,
-          "maxTokensToSample": 16000
+          "maxTokensToSample": 4000
         }
       },
       "id": "d0800000-0000-4000-8000-000000000004",
@@ -76,7 +76,7 @@
       "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
       "typeVersion": 1.3,
       "position": [
-        480,
+        720,
         200
       ],
       "credentials": {
@@ -88,14 +88,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Valida o JSON do Redator.\nconst pc = $('Peças para gerar (marca como gerando)').item.json;\nconst raw = String($json.output ?? $json.text ?? '').replace(/^```(json)?/, '').replace(/```$/, '').trim();\nlet out = null, erro = null;\ntry { out = JSON.parse(raw); } catch (e) { erro = 'JSON inválido: ' + e.message; }\nif (out && !String(out.content || '').trim()) { erro = 'peça vazia'; out = null; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null, tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nlet content = out?.content ?? null;\nif (out && Array.isArray(out.pendencias) && out.pendencias.length) content += '\\n\\n---\\n**Pendências para o revisor:**\\n' + out.pendencias.map(p => '- ' + p).join('\\n');\nreturn [{ json: { piece_id: pc.piece_id, ok: !!out, content, resumo_executivo: out?.resumo_executivo ?? null,\n                  documentos_anexar: Array.isArray(out?.documentos_anexar) ? out.documentos_anexar : [],\n                  qualidade: out?.qualidade ?? null, erro: erro ?? (out ? null : raw.slice(0, 300)),\n                  ai_meta: { agent_role: 'redacao', model: 'claude-sonnet-5', tokens_in, tokens_out, cost_usd } } }];"
+        "jsCode": "// Valida o JSON do Redator: só valores dos campos de IA (o texto da peça fica no banco).\nconst pc = $('Peças para gerar (marca como gerando)').item.json;\nconst raw = String($json.output ?? $json.text ?? '').replace(/^```(json)?/, '').replace(/```$/, '').trim();\nlet out = null, erro = null;\ntry { out = JSON.parse(raw); } catch (e) { erro = 'JSON inválido: ' + e.message; }\nif (out && (typeof out.valores !== 'object' || Array.isArray(out.valores) || out.valores === null)) out.valores = {};\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null, tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: { piece_id: pc.piece_id, ok: !!out, valores: out?.valores ?? {}, resumo_executivo: out?.resumo_executivo ?? null,\n                  documentos_anexar: Array.isArray(out?.documentos_anexar) ? out.documentos_anexar : [],\n                  qualidade: out?.qualidade ?? null, erro: erro ?? (out ? null : raw.slice(0, 300)),\n                  ai_meta: { agent_role: 'redacao', model: 'claude-sonnet-5', tokens_in, tokens_out, cost_usd } } }];"
       },
       "id": "d0800000-0000-4000-8000-000000000005",
       "name": "Interpretar peça",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        720,
+        960,
         0
       ]
     },
@@ -127,24 +127,24 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        960,
+        1200,
         0
       ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "select public.piece_generation_save($1::uuid, $2, $3, $4::jsonb, $5, $6::jsonb) as peca;",
+        "query": "select public.piece_generation_fill($1::uuid, $2::jsonb, $3, $4::jsonb, $5, $6::jsonb) as peca;",
         "options": {
-          "queryReplacement": "={{ $json.piece_id }}, {{ $json.content }}, {{ $json.resumo_executivo }}, {{ JSON.stringify($json.documentos_anexar) }}, {{ $json.qualidade }}, {{ JSON.stringify($json.ai_meta) }}"
+          "queryReplacement": "={{ $json.piece_id }}, {{ JSON.stringify($json.valores) }}, {{ $json.resumo_executivo }}, {{ JSON.stringify($json.documentos_anexar) }}, {{ $json.qualidade }}, {{ JSON.stringify($json.ai_meta) }}"
         }
       },
       "id": "d0800000-0000-4000-8000-000000000007",
-      "name": "piece_generation_save (vai para Revisão)",
+      "name": "piece_generation_fill (monta, preenche e vai para Revisão)",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        1200,
+        1440,
         -100
       ],
       "credentials": {
@@ -167,8 +167,31 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        1200,
+        1440,
         100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.piece_render($1::uuid) as r;",
+        "options": {
+          "queryReplacement": "={{ $json.piece_id }}"
+        }
+      },
+      "id": "d0800000-0000-4000-8000-000000000009",
+      "name": "Montar peça no banco (blocos + teses + dados)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        0
       ],
       "credentials": {
         "postgres": {
@@ -194,7 +217,7 @@
       "main": [
         [
           {
-            "node": "Redator",
+            "node": "Montar peça no banco (blocos + teses + dados)",
             "type": "main",
             "index": 0
           }
@@ -227,7 +250,7 @@
       "main": [
         [
           {
-            "node": "piece_generation_save (vai para Revisão)",
+            "node": "piece_generation_fill (monta, preenche e vai para Revisão)",
             "type": "main",
             "index": 0
           }
@@ -251,12 +274,23 @@
           }
         ]
       ]
+    },
+    "Montar peça no banco (blocos + teses + dados)": {
+      "main": [
+        [
+          {
+            "node": "Redator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "Gatilho: a cada 2 min. A peça é pedida quando a coleta termina: botão 'Finalizar coleta' (ui_finish_collection) ou o agente Coletor (advance_to 'peca' em apply_agent_effects) → request_piece_generation cria a peça em rascunho com geracao_status 'pendente'. piece_generation_claim() pega até 3 pendentes (e as presas em 'gerando' há 30+ min), marca 'gerando' e entrega os insumos: blocos obrigatórios + blocos das teses (piece_templates, invisíveis para o escritório), briefing, última qualificação (qualification_records), provas recebidas, dados do cliente e do escritório. O Redator devolve JSON; piece_generation_save() grava content, resumo_executivo, documentos_anexar e qualidade e põe a peça em Revisão (autor IA, agente redacao; o card aparece no Jurídico). Falha: piece_generation_failed() marca 'falhou' e abre 'erro_ia' para a equipe. Credenciais: Supabase (service_role) e Anthropic."
+    "notes": "Gatilho: a cada 2 min. A peça é pedida quando a coleta termina (botão 'Finalizar coleta' → ui_finish_collection, ou o agente Coletor). piece_generation_claim() pega até 3 pendentes e marca 'gerando'. 016: piece_render() monta a peça NO BANCO com os modelos do escritório (blocos obrigatórios na ordem + teses do briefing antes da abertura dos pedidos) e substitui os placeholders pelos dados do lead (piece_fill_context: datas dd/mm/aaaa, R$, valor por extenso). O Redator recebe só os campos de IA (DESCRICAO_*, jornada, função real...) e os manuais, e devolve os valores em JSON. piece_generation_fill() monta de novo, aplica os valores, transforma tudo o que faltou em [PREENCHER: CAMPO] e grava a peça em Revisão (autor IA, agente redacao). O texto da peça nunca passa pelo n8n. Falha: piece_generation_failed() abre 'erro_ia'. Sem modelos ativos, a geração falha com mensagem clara. Credenciais: Supabase (service_role) e Anthropic."
   }
 }
