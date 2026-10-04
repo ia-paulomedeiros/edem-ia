@@ -1,0 +1,399 @@
+{
+  "name": "TPL 12 — Templates da Meta (sincronizar e enviar para aprovação)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "c1200000-0000-4000-8000-000000000001",
+      "name": "A cada 30 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from public.templates_sync_targets();",
+        "options": {}
+      },
+      "id": "c1200000-0000-4000-8000-000000000002",
+      "name": "Números com WABA (templates_sync_targets)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.facebook.com/v21.0/{{ $json.waba_id }}/message_templates",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "name,language,status,category,id,components,rejected_reason"
+            },
+            {
+              "name": "limit",
+              "value": "200"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c1200000-0000-4000-8000-000000000003",
+      "name": "Graph API: listar templates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        -100
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "d",
+              "leftValue": "={{ $json.data }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c1200000-0000-4000-8000-000000000004",
+      "name": "Resposta com lista?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.templates_sync_apply($1::uuid, $2::jsonb) as resultado;",
+        "options": {
+          "queryReplacement": "={{ $('Números com WABA (templates_sync_targets)').item.json.whatsapp_number_id }}, {{ JSON.stringify($json.data ?? []) }}"
+        }
+      },
+      "id": "c1200000-0000-4000-8000-000000000005",
+      "name": "Atualizar status (templates_sync_apply)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        960,
+        -160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select t as template_id from public.templates_pending_submit() t;",
+        "options": {}
+      },
+      "id": "c1200000-0000-4000-8000-000000000006",
+      "name": "Pedidos de aprovação pendentes",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "templates/submit",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "c1200000-0000-4000-8000-000000000007",
+      "name": "Webhook POST /templates/submit",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        360
+      ],
+      "webhookId": "templates-submit"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select x.*\nfrom jsonb_to_record(public.template_submit_payload($1::uuid)) as x(\n  ok boolean, motivo text, template_id uuid, whatsapp_number_id uuid, waba_id text, token text, payload jsonb);",
+        "options": {
+          "queryReplacement": "={{ $json.body?.template_id ?? $json.template_id }}"
+        }
+      },
+      "id": "c1200000-0000-4000-8000-000000000008",
+      "name": "Payload do template (template_submit_payload)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c1200000-0000-4000-8000-000000000009",
+      "name": "Pedido válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        720,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $json.waba_id }}/message_templates",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {}
+      },
+      "id": "c1200000-0000-4000-8000-000000000010",
+      "name": "Graph API: criar template",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        200
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select (public.template_submitted($1::uuid, $2, $3, $4)).status as status;",
+        "options": {
+          "queryReplacement": "={{ $('Payload do template (template_submit_payload)').item.json.template_id }}, {{ $json.id ?? null }}, {{ $json.status ?? null }}, {{ $json.error ? (($json.error.message ?? '') + ' ' + JSON.stringify($json.error.description ?? $json.error)).slice(0, 500) : null }}"
+        }
+      },
+      "id": "c1200000-0000-4000-8000-000000000011",
+      "name": "Registrar envio (template_submitted)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 30 min": {
+      "main": [
+        [
+          {
+            "node": "Números com WABA (templates_sync_targets)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Pedidos de aprovação pendentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Números com WABA (templates_sync_targets)": {
+      "main": [
+        [
+          {
+            "node": "Graph API: listar templates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Graph API: listar templates": {
+      "main": [
+        [
+          {
+            "node": "Resposta com lista?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resposta com lista?": {
+      "main": [
+        [
+          {
+            "node": "Atualizar status (templates_sync_apply)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Pedidos de aprovação pendentes": {
+      "main": [
+        [
+          {
+            "node": "Payload do template (template_submit_payload)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook POST /templates/submit": {
+      "main": [
+        [
+          {
+            "node": "Payload do template (template_submit_payload)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload do template (template_submit_payload)": {
+      "main": [
+        [
+          {
+            "node": "Pedido válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pedido válido?": {
+      "main": [
+        [
+          {
+            "node": "Graph API: criar template",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Graph API: criar template": {
+      "main": [
+        [
+          {
+            "node": "Registrar envio (template_submitted)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "notes": "017. Templates da Meta por escritório (WhatsApp Cloud). (a) A cada 30 min: templates_sync_targets() lista os números ativos com waba_id e o token do Vault (só service_role); GET /{waba_id}/message_templates (até 200 por WABA) e templates_sync_apply() atualiza status (APPROVED→aprovado, REJECTED→rejeitado com rejected_reason, PAUSED→pausado, DISABLED→desativado, demais→pendente), meta_id, components e last_sync_at; template criado direto no Gerenciador da Meta entra na tabela. (b) Envio para aprovação: o admin chama ui_template_submit(template) no Edem (marca submit_requested_at) e o front pode chamar POST <n8n>/webhook/templates/submit com {\"template_id\": \"...\"} para enviar na hora; sem o webhook, a varredura de 30 min pega o pedido. template_submit_payload() só devolve payload de template pedido por admin (o webhook sozinho não cria nada). POST /{waba_id}/message_templates com name, language, category e components (BODY com exemplos {{1}}=primeiro nome, {{2}}=escritório); template_submitted() grava meta_id/status ou o erro (submit_error) e limpa o pedido para o admin tentar de novo. Credencial: 'Supabase (service_role)' (Postgres). Sem credencial da Meta no n8n: o token vem do Vault por número."
+  }
+}

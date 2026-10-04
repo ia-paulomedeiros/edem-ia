@@ -604,7 +604,8 @@ end $$;
 set request.jwt.claim.sub = '22222222-2222-2222-2222-222222222222';   -- Bruno, admin do B
 do $$ begin
   insert into public.wa_templates (office_id, name, body, params, status) values ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'retomada_1', 'Oi {{1}}, aqui é do {{2}}. Podemos continuar?', 2, 'aprovado');
-  assert (select count(*) from public.wa_templates) = 1, 'template do B visível para o B';
+  assert (select count(*) from public.wa_templates where name = 'retomada_1') = 1, 'template do B visível para o B';
+  assert (select count(*) from public.wa_templates where office_id <> 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb') = 0, 'B não vê templates de outro escritório (017 semeia 3 por escritório)';
   assert not has_function_privilege('authenticated', 'public.followup_queue(int)', 'execute'), 'followup_queue só n8n';
 end $$;
 reset role; reset request.jwt.claim.sub;

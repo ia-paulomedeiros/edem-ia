@@ -66,7 +66,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "select\n  l.id as lead_id, l.office_id, l.phase, c.id as conversation_id, $2::uuid as task_id, $3::text as retomada,\n  public.agent_config_full_lead(l.id) as agent,\n  public.conversation_context(c.id, 30) as context,\n  public.lead_dossier(l.id) as dossier\nfrom public.conversations c\njoin public.leads l on l.id = c.lead_id\nwhere c.id = $1 and public.ai_should_reply(c.id);",
+        "query": "select\n  l.id as lead_id, l.office_id, l.phase, c.id as conversation_id, $2::uuid as task_id, $3::text as retomada,\n  public.agent_config_full_lead(l.id) as agent,\n  public.conversation_context(c.id, 30) as context,\n  public.lead_dossier(l.id) as dossier,\n  public.agent_tags_context(l.id) as etiquetas\nfrom public.conversations c\njoin public.leads l on l.id = c.lead_id\nwhere c.id = $1 and public.ai_should_reply(c.id);",
         "options": {
           "queryReplacement": "={{ $json.conversation_id }}, {{ $json.task_id }}, {{ $json.description || $json.title }}"
         }
@@ -91,7 +91,7 @@
         "promptType": "define",
         "text": "={{ JSON.stringify($json.context) }}\n\nRETOMADA AGENDADA: {{ $json.retomada }}\nO lead não escreveu agora: é você quem retoma a conversa no horário combinado. Retome de forma natural, de onde a conversa parou, sem dizer que é uma mensagem automática e sem repetir perguntas já respondidas.",
         "options": {
-          "systemMessage": "={{ $json.agent.system_prompt }}\n\n## Dossiê do caso (JSON)\n{{ JSON.stringify({ lead: $json.dossier.lead, etapa: $json.dossier.etapa, case_data: $json.dossier.case_data, qualification: $json.dossier.qualification, evidences: $json.dossier.evidences, pieces: ($json.dossier.pieces || []).slice(0, 1).map(p => ({ status: p.status, alerta: p.alerta, documentos_anexar: p.documentos_anexar })), escritorio: $json.dossier.escritorio, params: $json.dossier.params }) }}\n\n## Formato de saída (obrigatório)\nResponda SOMENTE com JSON:\n{\"reply\": \"texto para o WhatsApp\", \"advance_to\": null | \"triagem\"|\"qualificacao\"|\"contrato\"|\"briefing\"|\"calculo\"|\"provas\"|\"peca\"|\"encerrado\"|\"revisao\", \"advance_reason\": string|null (com \"encerrado\", advance_reason é o código do motivo: cliente_desistiu | servidor_publico | sem_caso | sem_viabilidade | sem_provas | prescrito | insanavel | sem_resposta; \"revisao\" só o Saneador usa, para devolver a peça ao revisor), \"intervention\": null | {\"category\": \"duvida_juridica\"|\"fora_de_escopo\"|\"cliente_insatisfeito\"|\"pedido_de_humano\"|\"erro_ia\"|\"outro\", \"reason\": string, \"priority\": 1|2|3}, \"case_data\": null | {campos de public.case_data a atualizar}, \"task\": null | {\"title\": string, \"description\": string, \"due_at\": \"data-hora ISO 8601 com fuso, quando o lead combinar um retorno\"}, \"contract\": null | {\"action\": \"send\", \"honorarios_percent\": number|null} (só o agente de contrato, quando o lead aceitar os honorários), \"briefing\": null | {\"dados_pessoais\": {}, \"dados_vinculo\": {}, \"verbas\": {}, \"timeline\": [], \"inconsistencias\": string, \"gaps\": string, \"teses\": [string], \"fatos\": string, \"alertas\": string, \"testemunhas\": [], \"conteudo\": \"markdown completo\", \"status\": \"em_andamento\"|\"concluido\"} (só o agente de briefing; envie o que apurou nesta rodada)}"
+          "systemMessage": "={{ $json.agent.system_prompt }}\n\n## Dossiê do caso (JSON)\n{{ JSON.stringify({ lead: $json.dossier.lead, etapa: $json.dossier.etapa, case_data: $json.dossier.case_data, qualification: $json.dossier.qualification, evidences: $json.dossier.evidences, pieces: ($json.dossier.pieces || []).slice(0, 1).map(p => ({ status: p.status, alerta: p.alerta, documentos_anexar: p.documentos_anexar })), escritorio: $json.dossier.escritorio, params: $json.dossier.params }) }}\n\n## Etiquetas\nDisponíveis no escritório: {{ ($json.etiquetas?.disponiveis ?? []).join(', ') || 'nenhuma' }}\nJá no lead: {{ ($json.etiquetas?.do_lead ?? []).join(', ') || 'nenhuma' }}\n\n## Formato de saída (obrigatório)\nResponda SOMENTE com JSON:\n{\"reply\": \"texto para o WhatsApp\", \"advance_to\": null | \"triagem\"|\"qualificacao\"|\"contrato\"|\"briefing\"|\"calculo\"|\"provas\"|\"peca\"|\"encerrado\"|\"revisao\", \"advance_reason\": string|null (com \"encerrado\", advance_reason é o código do motivo: cliente_desistiu | servidor_publico | sem_caso | sem_viabilidade | sem_provas | prescrito | insanavel | sem_resposta; \"revisao\" só o Saneador usa, para devolver a peça ao revisor), \"intervention\": null | {\"category\": \"duvida_juridica\"|\"fora_de_escopo\"|\"cliente_insatisfeito\"|\"pedido_de_humano\"|\"erro_ia\"|\"outro\", \"reason\": string, \"priority\": 1|2|3}, \"case_data\": null | {campos de public.case_data a atualizar}, \"task\": null | {\"title\": string, \"description\": string, \"due_at\": \"data-hora ISO 8601 com fuso, quando o lead combinar um retorno\"}, \"contract\": null | {\"action\": \"send\", \"honorarios_percent\": number|null} (só o agente de contrato, quando o lead aceitar os honorários), \"briefing\": null | {\"dados_pessoais\": {}, \"dados_vinculo\": {}, \"verbas\": {}, \"timeline\": [], \"inconsistencias\": string, \"gaps\": string, \"teses\": [string], \"fatos\": string, \"alertas\": string, \"testemunhas\": [], \"conteudo\": \"markdown completo\", \"status\": \"em_andamento\"|\"concluido\"} (só o agente de briefing; envie o que apurou nesta rodada)}\nCampo opcional \"tags\": null | [nomes exatos da lista de etiquetas disponíveis] para marcar o lead (ex.: [\"Urgente\"], [\"Estrangeiro\"]). Nunca invente etiqueta e não use etiqueta para indicar etapa; o sistema ignora nome desconhecido."
         }
       },
       "id": "d9000000-0000-4000-8000-000000000005",
@@ -132,7 +132,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Normaliza a saída do agente e monta ai_meta (custo derivado, nunca digitado).\nconst ctx = $('Agente do lead + contexto + dossiê').item.json;\nconst raw = $json.output ?? $json.text ?? '';\nlet parsed;\ntry { parsed = JSON.parse(String(raw).replace(/^```(json)?/,'').replace(/```$/,'').trim()); } catch { parsed = { reply: String(raw) }; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null;\nconst tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: {\n  ...ctx,\n  reply: parsed.reply ?? '',\n  advance_to: parsed.advance_to ?? null,\n  advance_reason: parsed.advance_reason ?? null,\n  intervention: parsed.intervention ?? null,\n  case_data: parsed.case_data ?? null,\n  task: parsed.task ?? null,\n  contract: parsed.contract ?? null,\n  briefing: parsed.briefing ?? null,\n  ai_meta: { agent_role: ctx.agent.role, model: ctx.agent.model, tokens_in, tokens_out, cost_usd, via: 'agendamento' }\n}}];"
+        "jsCode": "// Normaliza a saída do agente e monta ai_meta (custo derivado, nunca digitado).\nconst ctx = $('Agente do lead + contexto + dossiê').item.json;\nconst raw = $json.output ?? $json.text ?? '';\nlet parsed;\ntry { parsed = JSON.parse(String(raw).replace(/^```(json)?/,'').replace(/```$/,'').trim()); } catch { parsed = { reply: String(raw) }; }\nconst usage = $json.tokenUsage ?? $json.usage ?? {};\nconst tokens_in = usage.promptTokens ?? usage.input_tokens ?? null;\nconst tokens_out = usage.completionTokens ?? usage.output_tokens ?? null;\nconst price_in = Number($env.LLM_PRICE_IN_PER_MTOK ?? 3), price_out = Number($env.LLM_PRICE_OUT_PER_MTOK ?? 15);\nconst cost_usd = (tokens_in != null && tokens_out != null) ? +((tokens_in * price_in + tokens_out * price_out) / 1e6).toFixed(6) : null;\nreturn [{ json: {\n  ...ctx,\n  reply: parsed.reply ?? '',\n  advance_to: parsed.advance_to ?? null,\n  advance_reason: parsed.advance_reason ?? null,\n  intervention: parsed.intervention ?? null,\n  case_data: parsed.case_data ?? null,\n  task: parsed.task ?? null,\n  contract: parsed.contract ?? null,\n  briefing: parsed.briefing ?? null,\n  tags: Array.isArray(parsed.tags) ? parsed.tags.filter(t => typeof t === 'string').slice(0, 10) : null,\n  ai_meta: { agent_role: ctx.agent.role, model: ctx.agent.model, tokens_in, tokens_out, cost_usd, via: 'agendamento' }\n}}];"
       },
       "id": "d9000000-0000-4000-8000-000000000007",
       "name": "Interpretar resposta",
@@ -169,9 +169,9 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "select public.apply_agent_effects($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb) as effects;",
+        "query": "select public.apply_agent_effects($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb) as effects;",
         "options": {
-          "queryReplacement": "={{ $json.lead_id }}, {{ $json.conversation_id }}, {{ $json.agent.role }}, {{ JSON.stringify($json.case_data) }}, {{ $json.advance_to }}, {{ $json.advance_reason }}, {{ JSON.stringify($json.intervention) }}, {{ JSON.stringify($json.task) }}, {{ JSON.stringify($json.contract) }}, {{ JSON.stringify($json.briefing) }}"
+          "queryReplacement": "={{ $json.lead_id }}, {{ $json.conversation_id }}, {{ $json.agent.role }}, {{ JSON.stringify($json.case_data) }}, {{ $json.advance_to }}, {{ $json.advance_reason }}, {{ JSON.stringify($json.intervention) }}, {{ JSON.stringify($json.task) }}, {{ JSON.stringify($json.contract) }}, {{ JSON.stringify($json.briefing) }}, {{ JSON.stringify($json.tags ?? null) }}"
         }
       },
       "id": "d9000000-0000-4000-8000-000000000009",
@@ -205,6 +205,47 @@
       "position": [
         1680,
         -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "a9000000-0000-4000-8000-000000000201",
+      "name": "A cada minuto (mensagens agendadas)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.scheduled_dispatch(50) as resultado;",
+        "options": {}
+      },
+      "id": "a9000000-0000-4000-8000-000000000202",
+      "name": "Disparar mensagens agendadas (scheduled_dispatch)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        400
       ],
       "credentials": {
         "postgres": {
@@ -307,12 +348,23 @@
           }
         ]
       ]
+    },
+    "A cada minuto (mensagens agendadas)": {
+      "main": [
+        [
+          {
+            "node": "Disparar mensagens agendadas (scheduled_dispatch)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "Gatilho: a cada 5 min. 1) agendamentos_escalar(): agendamento vencido com a conversa assumida pela equipe (ou com intervenção aberta) vira intervenção 'agendamento' para a equipe (tasks.escalada_em marca para não repetir). 2) agendamentos_due(): vencidos com a conversa ainda com a IA, lead não pausado nem encerrado. Para cada um roda o agente do lead (agent_config_full_lead, mesma saída JSON do WA 02) com a instrução 'RETOMADA AGENDADA: {descrição}', grava a resposta em messages (linha primeiro; o WA 03 envia pelo provedor ativo), aplica os efeitos com autor IA e chama agendamento_mark_done(task, 'realizado') — evento agendamento_retomado. O agente cria agendamentos pelo campo task (com due_at) do apply_agent_effects. Credenciais: Supabase (service_role) e Anthropic. Env: LLM_PRICE_IN_PER_MTOK / LLM_PRICE_OUT_PER_MTOK."
+    "notes": "Gatilho: a cada 5 min. 1) agendamentos_escalar(): agendamento vencido com a conversa assumida pela equipe (ou com intervenção aberta) vira intervenção 'agendamento' para a equipe (tasks.escalada_em marca para não repetir). 2) agendamentos_due(): vencidos com a conversa ainda com a IA, lead não pausado nem encerrado. Para cada um roda o agente do lead (agent_config_full_lead, mesma saída JSON do WA 02) com a instrução 'RETOMADA AGENDADA: {descrição}', grava a resposta em messages (linha primeiro; o WA 03 envia pelo provedor ativo), aplica os efeitos com autor IA e chama agendamento_mark_done(task, 'realizado') — evento agendamento_retomado. O agente cria agendamentos pelo campo task (com due_at) do apply_agent_effects. Credenciais: Supabase (service_role) e Anthropic. Env: LLM_PRICE_IN_PER_MTOK / LLM_PRICE_OUT_PER_MTOK. 017: segundo gatilho, a cada minuto: scheduled_dispatch(50) grava em messages (sender sistema, status pending) as mensagens agendadas vencidas; o WA 03 envia. Sem template e com a janela de 24h fechada o agendamento vira 'falhou' com o motivo. A retomada da IA também devolve \"tags\" (apply_agent_effects com 11 parâmetros) e recebe as etiquetas no prompt."
   }
 }

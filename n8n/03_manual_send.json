@@ -71,6 +71,15 @@
                 "type": "string",
                 "operation": "equals"
               }
+            },
+            {
+              "id": "s5",
+              "leftValue": "={{ $json.body.record.kind ?? 'chat' }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
             }
           ],
           "combinator": "and"
@@ -89,13 +98,13 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "select * from public.mensageria_destino($1);",
+        "query": "select x.*\nfrom jsonb_to_record(public.mensageria_envio($1::uuid)) as x(\n  ok boolean, skip boolean, motivo text, message_id uuid, office_id uuid, provider text, body text, template jsonb,\n  wa_id text, phone_number_id text, token text, provider_config jsonb, janela_aberta boolean,\n  media jsonb, media_tipo text, sign_path text);",
         "options": {
           "queryReplacement": "={{ $json.body.record.id }}"
         }
       },
       "id": "c3000000-0000-4000-8000-000000000003",
-      "name": "Destino + provedor + token do Vault",
+      "name": "Envio: destino, mídia e janela de 24h",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
@@ -110,54 +119,36 @@
       }
     },
     {
+      "id": "c3000000-0000-4000-8000-000000000011",
+      "name": "Pode enviar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        600,
+        -100
+      ],
       "parameters": {
-        "method": "POST",
-        "url": "=https://graph.facebook.com/v21.0/{{ $json.phone_number_id }}/messages",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
             {
-              "name": "Authorization",
-              "value": "=Bearer {{ $json.token }}"
+              "id": "ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
             }
-          ]
+          ],
+          "combinator": "and"
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.template ? { messaging_product: 'whatsapp', to: $json.wa_id, type: 'template', template: $json.template } : { messaging_product: 'whatsapp', to: $json.wa_id, type: 'text', text: { body: $json.body } }) }}",
         "options": {}
-      },
-      "id": "c3000000-0000-4000-8000-000000000004",
-      "name": "Graph API: enviar",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        840,
-        -200
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "update public.messages\n   set status = case when $2 is null then 'failed' else 'sent' end,\n       wa_message_id = $2,\n       error = $3\n where id = $1;",
-        "options": {
-          "queryReplacement": "={{ $('Destino + provedor + token do Vault').item.json.message_id }}, {{ $json.messages?.[0]?.id ?? null }}, {{ $json.error ? JSON.stringify($json.error).slice(0, 500) : null }}"
-        }
-      },
-      "id": "c3000000-0000-4000-8000-000000000005",
-      "name": "Marcar enviada / falha",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        1080,
-        -200
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "",
-          "name": "Supabase (service_role)"
-        }
       }
     },
     {
@@ -221,9 +212,190 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        600,
+        800,
         -100
       ]
+    },
+    {
+      "id": "c3000000-0000-4000-8000-000000000012",
+      "name": "Tem mídia?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "m",
+              "leftValue": "={{ $json.media_tipo ?? '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3000000-0000-4000-8000-000000000013",
+      "name": "Storage: URL assinada (5 min)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1260,
+        -300
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "",
+          "name": "Supabase API (service_role)"
+        }
+      },
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/storage/v1/object/sign/{{ $json.sign_path }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"expiresIn\": 300}",
+        "options": {}
+      }
+    },
+    {
+      "id": "c3000000-0000-4000-8000-000000000014",
+      "name": "Montar mensagem (texto, template ou mídia)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        -200
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Monta o corpo da Graph API: template, mídia (link assinado do Storage) ou texto.\nconst e = $('Envio: destino, mídia e janela de 24h').item.json;\nconst base = { messaging_product: 'whatsapp', recipient_type: 'individual', to: e.wa_id };\nif (e.template) return { json: { ...e, graph_body: { ...base, type: 'template', template: e.template } } };\nif (e.media_tipo) {\n  const signed = $json.signedURL ?? $json.signedUrl;\n  if (!signed) return { json: { ...e, graph_body: null, erro: 'Falha ao gerar o link da mídia no Storage: ' + JSON.stringify($json.error ?? $json).slice(0, 300) } };\n  const t = e.media_tipo;                      // audio | document | image | video\n  const m = { link: $env.SUPABASE_URL + '/storage/v1' + signed };\n  if (t === 'document') m.filename = e.media?.filename ?? 'documento.pdf';\n  const caption = e.media?.caption ?? e.body;\n  if (t !== 'audio' && caption) m.caption = caption;\n  return { json: { ...e, graph_body: { ...base, type: t, [t]: m } } };\n}\nreturn { json: { ...e, graph_body: { ...base, type: 'text', text: { preview_url: true, body: e.body ?? '' } } } };"
+      }
+    },
+    {
+      "id": "c3000000-0000-4000-8000-000000000015",
+      "name": "Corpo pronto?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        -200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "b",
+              "leftValue": "={{ $json.graph_body }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $json.phone_number_id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.graph_body) }}",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000004",
+      "name": "Graph API: enviar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        -260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update public.messages\n   set status = case when $2 is null then 'failed' else 'sent' end,\n       wa_message_id = $2,\n       error = $3\n where id = $1;",
+        "options": {
+          "queryReplacement": "={{ $('Montar mensagem (texto, template ou mídia)').item.json.message_id }}, {{ $json.messages?.[0]?.id ?? null }}, {{ $json.error ? JSON.stringify($json.error).slice(0, 500) : null }}"
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000005",
+      "name": "Marcar enviada / falha",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2140,
+        -260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      }
+    },
+    {
+      "id": "c3000000-0000-4000-8000-000000000016",
+      "name": "Mídia indisponível (marca falha)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1920,
+        -60
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Supabase (service_role)"
+        }
+      },
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.message_mark_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ $json.message_id }}, {{ $json.erro }}"
+        }
+      }
     },
     {
       "parameters": {
@@ -238,7 +410,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        840,
+        1040,
         60
       ],
       "credentials": {
@@ -261,7 +433,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        840,
+        1040,
         200
       ],
       "credentials": {
@@ -284,22 +456,11 @@
         ]
       ]
     },
-    "Graph API: enviar": {
-      "main": [
-        [
-          {
-            "node": "Marcar enviada / falha",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Mensagem pendente de envio?": {
       "main": [
         [
           {
-            "node": "Destino + provedor + token do Vault",
+            "node": "Envio: destino, mídia e janela de 24h",
             "type": "main",
             "index": 0
           }
@@ -307,7 +468,18 @@
         []
       ]
     },
-    "Destino + provedor + token do Vault": {
+    "Envio: destino, mídia e janela de 24h": {
+      "main": [
+        [
+          {
+            "node": "Pode enviar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pode enviar?": {
       "main": [
         [
           {
@@ -315,14 +487,15 @@
             "type": "main",
             "index": 0
           }
-        ]
+        ],
+        []
       ]
     },
     "Provedor de mensageria": {
       "main": [
         [
           {
-            "node": "Graph API: enviar",
+            "node": "Tem mídia?",
             "type": "main",
             "index": 0
           }
@@ -342,12 +515,81 @@
           }
         ]
       ]
+    },
+    "Tem mídia?": {
+      "main": [
+        [
+          {
+            "node": "Storage: URL assinada (5 min)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Montar mensagem (texto, template ou mídia)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Storage: URL assinada (5 min)": {
+      "main": [
+        [
+          {
+            "node": "Montar mensagem (texto, template ou mídia)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar mensagem (texto, template ou mídia)": {
+      "main": [
+        [
+          {
+            "node": "Corpo pronto?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Corpo pronto?": {
+      "main": [
+        [
+          {
+            "node": "Graph API: enviar",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mídia indisponível (marca falha)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Graph API: enviar": {
+      "main": [
+        [
+          {
+            "node": "Marcar enviada / falha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
   "meta": {
-    "notes": "No Supabase: Database > Webhooks > nova: tabela public.messages, evento INSERT, URL = <n8n>/webhook/supabase/messages, header x-webhook-secret = SUPABASE_WEBHOOK_SECRET (env do n8n). A UI nunca chama a Graph API: ela só cria a linha (send_manual_message). Desde a 011 também envia mensagens com sender = sistema (link do contrato, régua de follow-up): elas não pausam a IA. Se messages.template estiver preenchido ({name, language:{code}, components}), envia como template (janela de 24h fechada); senão, texto livre. 015: envia também as mensagens da IA (sender = ia): o WA 02 e o AG 09 só gravam a linha; todo envio sai por aqui. P3: mensageria_destino() devolve o provedor ativo do escritório (um por vez; sem integração ativa vale o número do WhatsApp Cloud) e o segredo do Vault. Switch por provedor: WhatsApp Cloud envia pela Graph API; Datacrazy ainda não tem envio (a documentação oficial não pôde ser consultada nesta sessão) e a linha é marcada como falha com o motivo, para não ficar presa em pending."
+    "notes": "No Supabase: Database > Webhooks > nova: tabela public.messages, evento INSERT, URL = <n8n>/webhook/supabase/messages, header x-webhook-secret = SUPABASE_WEBHOOK_SECRET (env do n8n). A UI nunca chama a Graph API: ela só cria a linha (send_manual_message). Desde a 011 também envia mensagens com sender = sistema (link do contrato, régua de follow-up): elas não pausam a IA. Se messages.template estiver preenchido ({name, language:{code}, components}), envia como template (janela de 24h fechada); senão, texto livre. 015: envia também as mensagens da IA (sender = ia): o WA 02 e o AG 09 só gravam a linha; todo envio sai por aqui. P3: mensageria_destino() devolve o provedor ativo do escritório (um por vez; sem integração ativa vale o número do WhatsApp Cloud) e o segredo do Vault. Switch por provedor: WhatsApp Cloud envia pela Graph API; Datacrazy ainda não tem envio (a documentação oficial não pôde ser consultada nesta sessão) e a linha é marcada como falha com o motivo, para não ficar presa em pending. 017: só envia messages.kind = 'chat' (nota interna e mensagem de evento nunca saem). mensageria_envio() substitui a consulta de destino: devolve destino + token + mídia normalizada e aplica a trava da janela de 24h (sem template e com a janela fechada a linha vira failed com 'Janela de 24h fechada: use um template aprovado' e ok = false). Mídia (media.bucket + media.storage_path nos buckets respostas, provas, pecas, contratos): pede URL assinada de 5 min ao Storage (POST {SUPABASE_URL}/storage/v1/object/sign/<bucket>/<caminho>, credencial 'Supabase API (service_role)') e envia como audio, document (com filename), image ou video (com legenda). wa_message_id gravado no retorno da Graph API."
   }
 }

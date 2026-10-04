@@ -6,7 +6,7 @@
 -- assinados espalhados pelos dias, UFs variadas e alguns encerrados.
 -- Tudo marcado com wa_id começando em '5500' para poder apagar depois.
 --
--- Rodar no SQL Editor depois de 001..015. Pode rodar mais de uma vez (apaga
+-- Rodar no SQL Editor depois de 001..017. Pode rodar mais de uma vez (apaga
 -- e recria o demo). Para remover: rode só o bloco "LIMPEZA".
 -- =============================================================================
 
@@ -16,6 +16,7 @@ delete from public.contacts where wa_id like '5500%';
 delete from public.ad_spend where canal = 'meta_ads' and nota is null and office_id = (select id from public.offices order by created_at limit 1);
 delete from public.piece_models where file_path like '%/demo/%';
 delete from public.integrations where config->>'demo' = 'true';
+delete from public.quick_replies where group_name = 'Demo';
 
 -- ---------- GERAÇÃO
 do $$
@@ -347,6 +348,45 @@ begin
    where t.office_id = v_office and t.kind = 'agendamento' and t.status = 'agendado' and t.due_at > now() and extract(minute from t.due_at)::int % 2 = 0;
   update public.tasks t set status = 'cancelado'
    where t.id = (select id from public.tasks where office_id = v_office and kind = 'agendamento' and status = 'agendado' order by due_at limit 1);
+end $$;
+
+-- ---------- 017: mensageria (etiquetas, status de atendimento, anúncio, nota, respostas rápidas)
+do $$
+declare v_office uuid; v_member uuid; r record; n int := 0;
+begin
+  select id into v_office from public.offices order by created_at limit 1;
+  select user_id into v_member from public.office_members where office_id = v_office and role in ('admin','advogado') order by created_at limit 1;
+  perform public.seed_office_defaults(v_office);
+  for r in select l.id as lead_id, c.id as conv, row_number() over (order by l.created_at) as i
+           from public.leads l join public.contacts ct on ct.id = l.contact_id
+           join public.conversations c on c.lead_id = l.id
+           where ct.wa_id like '5500%' and l.closed_at is null
+  loop
+    if r.i % 5 = 0 then perform public.lead_tag_apply(r.lead_id, public.tag_find(v_office, 'Urgente'), true, 'sistema', null); end if;
+    if r.i % 7 = 0 then perform public.lead_tag_apply(r.lead_id, public.tag_find(v_office, 'Indicação'), true, 'sistema', null); end if;
+    if r.i % 11 = 0 then perform public.lead_tag_apply(r.lead_id, public.tag_find(v_office, 'Estrangeiro'), true, 'sistema', null); end if;
+    if r.i % 4 = 0 then
+      perform public.lead_set_referral(r.lead_id, jsonb_build_object('source_id', 'DEMO-AD-' || (r.i % 3 + 1), 'source_type', 'ad',
+        'headline', (array['Foi demitido? Conheça seus direitos', 'Horas extras não pagas?', 'Trabalhou sem carteira?'])[r.i % 3 + 1],
+        'ctwa_clid', 'demo-' || r.i), true);
+    end if;
+    -- algumas conversas na fila humana: aguardando e em atendimento
+    if r.i % 9 = 0 then
+      update public.conversations set ai_paused = true, status = 'waiting', waiting_since = now() - make_interval(mins => (20 + r.i)::int)
+       where id = r.conv;
+    elsif r.i % 9 = 1 and v_member is not null then
+      update public.conversations set ai_paused = true, paused_by = v_member, status = 'in_service', assigned_to = v_member where id = r.conv;
+      insert into public.messages (office_id, conversation_id, direction, sender, body, status, kind, sent_by)
+      values (v_office, r.conv, 'out', 'humano', 'Nota interna: conferir CTPS antes de enviar o contrato.', 'sent', 'nota', v_member);
+    end if;
+    n := n + 1;
+  end loop;
+  if v_member is not null then
+    insert into public.quick_replies (office_id, group_name, title, shortcut, kind, body, created_by) values
+      (v_office, 'Demo', 'Saudação', '/oi', 'texto', 'Olá, {{primeiro_nome}}! Aqui é {{atendente}}, do {{escritorio}}. Como posso ajudar?', v_member),
+      (v_office, 'Demo', 'Pedir documentos', '/docs', 'texto', '{{primeiro_nome}}, para seguirmos preciso de foto do RG, da CTPS e do último holerite.', v_member)
+    on conflict do nothing;
+  end if;
 end $$;
 
 select 'demo criado' as status, count(*) as leads from public.leads l join public.contacts c on c.id = l.contact_id where c.wa_id like '5500%';

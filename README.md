@@ -32,9 +32,10 @@ Vault) + n8n + WhatsApp Cloud API.
 | Sprint 4c — paridade de regras com a Láquila: faixas LOW/MID/HIGH, vínculo mínimo por tipo de saída, métricas comerciais e taxa de manutenção (`ui_save_empresa`), encerramento por motivo (Inviável/Insanável), etapa detalhada do lead, agentes com persona + Saneador e agente por lead, jornada de 5 etapas, Marketing Claude/OpenAI, views novas (`v_clientes`, `v_fluxo_cards`, `v_juridico_cards`, `v_fila_leads`, `v_marketing_dia`) | `supabase/014_paridade_regras.sql` + n8n 02/06 | Testada localmente (`run.sh`); aplicar no Supabase |
 | Sprint 4c — automações: documentos do WhatsApp no caso (`ingest_media`), agendamentos que a IA retoma, monitores da fila, Calculista com qualificação versionada, geração da peça, mensageria/assinatura por provedor | `supabase/015_paridade_automacoes.sql` + `n8n/08..11` + n8n 02/03/05 | Testada localmente (`run.sh`); n8n JSON válido; Datacrazy pendente |
 | Sprint 4c — modelos de petição da Láquila: 133 placeholders mapeados para os dados do Edem (`piece_placeholders`), contexto formatado por lead (`piece_fill_context`: datas, R$, extenso), peça montada no banco (blocos obrigatórios + teses) e saneada (o que falta vira `[PREENCHER: CAMPO]`); os textos dos modelos ficam fora do repo | `supabase/016_placeholders_laquila.sql` + n8n 08 | Testada localmente (`run.sh`, PG 16 e 17); aplicar no Supabase |
+| Mensageria própria: etiquetas do lead, departamentos e acesso por número (RLS por conversa), status de atendimento (com a IA, aguardando, em atendimento, finalizada, arquivada) com mensagem de evento e `case_events`, notas internas, `v_conversas` e contadores, respostas rápidas (texto/áudio/arquivo), envio de mídia e trava da janela de 24h, mensagens agendadas, templates da Meta (sincronizar e enviar para aprovação), mesclar conversas, origem do anúncio (Click-to-WhatsApp), expediente e notificações, monitor "Cliente esperando", modelos de petição editáveis pelo escritório com versões | `supabase/017_mensageria.sql` + n8n 02/03/09/10 + `n8n/12_templates_sync.json` | Testada localmente (`run.sh` e `run_upgrade.sh`, PG 16 e 17); aplicar no Supabase |
 | Sprint 4c — prompts de paridade de regras (etapa, persona, Empresa, Finalizados por tipo, Histórico de tarefas, Documentos, Qualificação, Agendamentos, alertas da fila) | `lovable/PROMPT-v4.md` | 7 prompts (14–20) |
 
-"Aplicada e testada" = `supabase/tests/run.sh` roda 001→016 duas vezes num PostgreSQL 16 limpo
+"Aplicada e testada" = `supabase/tests/run.sh` roda 001→017 duas vezes num PostgreSQL 16 limpo
 (idempotência) e passa quatro testes: o smoke (ingestão idempotente, isolamento entre escritórios, trava do
 takeover, fase com autor, portão, prescrição, fila, efeitos do agente, integrações com Vault, prompts
 invisíveis), o de dashboard (seed de 60 leads, RPCs como membro, marketing e custo por lead) e o de
@@ -42,7 +43,9 @@ paridade (`30_paridade.sql`: faixas, vínculo por tipo de saída, Empresa, motiv
 cada estado, agente por lead e Saneador, Marketing Claude/OpenAI, documentos, agendamentos, monitores
 idempotentes, Calculista, geração da peça, provedor de mensageria e privilégios) e o de placeholders
 (`40_placeholders.sql`: datas, moeda e extenso preenchidos, campos sem dado viram `[PREENCHER: ...]`, peça
-montada na ordem, nenhum placeholder cru).
+montada na ordem, nenhum placeholder cru) e o de mensageria (`50_mensageria.sql`: seed por escritório, etiquetas
+por humano e IA, status e janela, RPCs de atendimento com evento, visibilidade por número/departamento, respostas rápidas, mídia, janela fechada,
+agendadas, templates, anúncio, mescla, notificações, monitor de espera, modelos editáveis e privilégios).
 
 Por que existem views novas na 014: o `run.sh` reaplica tudo duas vezes e o Postgres não deixa um
 `create or replace view` tirar colunas; se a 014 acrescentasse colunas em `v_case_cards`,
@@ -68,15 +71,16 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
 
 ## Como aplicar no Supabase
 
-1. SQL Editor: colar `supabase/apply_all.sql` (001..016 juntas) e executar. Ou rodar
+1. SQL Editor: colar `supabase/apply_all.sql` (001..017 juntas) e executar. Ou rodar
    `001_schema.sql`, `002_dominio_juridico.sql`, `003_caso_unico.sql`, `004_dashboard.sql`,
    `005_funil.sql`, `006_dashboard_periodo.sql`, `007_fila.sql`, `008_configuracoes.sql`,
-   `009_marketing.sql`, `010_juridico_agenda.sql`, `011_caso_completo.sql`, `012_fila_por_lead.sql`, `013_fluxo_laquila.sql`, `014_paridade_regras.sql`, `015_paridade_automacoes.sql` e `016_placeholders_laquila.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
+   `009_marketing.sql`, `010_juridico_agenda.sql`, `011_caso_completo.sql`, `012_fila_por_lead.sql`, `013_fluxo_laquila.sql`, `014_paridade_regras.sql`, `015_paridade_automacoes.sql`, `016_placeholders_laquila.sql` e `017_mensageria.sql` nessa ordem. Todas são idempotentes; nunca editar uma já aplicada. `apply_all.sql` é gerado a partir
    das individuais (`supabase/tests/run.sh` não o usa); regenere quando criar uma migration nova.
    Opcional: `seed_demo.sql` cria 60 leads de demonstração (reversível pelo bloco LIMPEZA).
    Banco que já tem até a 013 (produção): aplicar a 014, a 015 e a 016 pelas partes de
    `supabase/partes/` (014a..014e, 015a..015c, 016a..016b, cada uma < 30 KB e terminando com um SELECT que
    devolve `OK`) ou pelo psql com `supabase/tools/aplicar_partes.sh`. Ver `supabase/partes/LEIA-ME.md`.
+   Banco na 016: só as partes 017a..017f (ou `aplicar_partes.sh 017`).
 2. Token da Meta: pelo painel, Configurações → Integrações → WhatsApp Cloud API (Meta), que chama
    `set_integration()` e cria o segredo no Vault e o número em `whatsapp_numbers`. Alternativa manual:
    criar o segredo no Vault e cadastrar o número como abaixo.
@@ -89,12 +93,14 @@ Detalhes em `docs/01-blueprint.md`. Backlog em `docs/02-recalibragem-sprints.md`
    ```
 4. Database Webhooks: INSERT em `public.messages` → `<n8n>/webhook/supabase/messages`; INSERT e UPDATE
    em `public.contracts` → `<n8n>/webhook/supabase/contracts`; ambos com o header `x-webhook-secret`.
-5. n8n: importar os dez JSON e ativar todos.
+5. n8n: importar os onze JSON e ativar todos.
    - 01 verificação da Meta; 02 inbound com agente (agente por lead, documentos recebidos viram prova);
      03 envio de toda mensagem pendente pelo provedor ativo; 04 custos de marketing (diário);
      05 contrato/assinatura (precisa do Gotenberg); 06 régua de follow-up (30 min).
    - Novos na 014/015: 08 geração da peça (2 min), 09 agendamentos que a IA retoma (5 min),
      10 monitores da fila (10 min), 11 Calculista (5 min). São agendados: nenhum Database Webhook novo.
+   - 017: 12 templates da Meta (30 min + webhook `/webhook/templates/submit`); 09 ganhou o disparo das
+     mensagens agendadas (1 min); 03 envia mídia por URL assinada do Storage e respeita a janela de 24h.
    - Credenciais: Postgres `Supabase (service_role)` (session pooler), `Anthropic`, e, para subir os
      documentos no bucket `provas`, `Supabase API (service_role)` (tipo Supabase: host do projeto +
      service_role key).
@@ -114,24 +120,24 @@ Precisa de um PostgreSQL 16 acessível (não o Supabase de produção: o shim cr
 supabase/tests/run.sh "-h localhost -p 5432 -U postgres"
 ```
 
-Saída esperada: `SMOKE OK`, `DASHBOARD OK`, `PARIDADE OK` e `PLACEHOLDERS OK`.
+Saída esperada: `SMOKE OK`, `DASHBOARD OK`, `PARIDADE OK`, `PLACEHOLDERS OK` e `MENSAGERIA OK`.
 
-Upgrade como em produção (001..013 + seed da 013, depois as partes da 014/015 exigindo OK em cada
-uma, reaplicação e seed atual):
+Upgrade como em produção (001..013 + seed da 013, depois as partes da 014–016 exigindo OK em cada
+uma, a 017 por upgrade sobre esse estado, reaplicação e seed atual):
 
 ```bash
 supabase/tests/run_upgrade.sh "-h localhost -p 5432 -U postgres"
 ```
 
-As duas suítes passam em PostgreSQL 16 e 17.6 (a do Supabase). Ao mudar a 014 ou a 015, regenere as
+As duas suítes passam em PostgreSQL 16 e 17.6 (a do Supabase). Ao mudar a 014..017, regenere as
 partes com `python3 supabase/tools/split_migrations.py` (o `run_upgrade.sh` falha se estiverem velhas).
 
 ## Estrutura
 
 ```
 docs/       blueprint e recalibragem do backlog
-supabase/   migrations 001..016, apply_all.sql, seed_demo.sql, partes/ (014–016 em pedaços < 30 KB), tools/ e tests/
-n8n/        dez workflows exportados (01 verificação, 02 inbound com agente, 03 envio, 04 custos, 05 contrato/assinatura, 06 régua, 08 peça, 09 agendamentos, 10 monitores, 11 Calculista)
+supabase/   migrations 001..017, apply_all.sql, seed_demo.sql, partes/ (014–017 em pedaços < 30 KB), tools/ e tests/
+n8n/        onze workflows exportados (01 verificação, 02 inbound com agente, 03 envio, 04 custos, 05 contrato/assinatura, 06 régua, 08 peça, 09 agendamentos e mensagens agendadas, 10 monitores, 11 Calculista, 12 templates da Meta)
 lovable/    prompts de build v1 (monitor), v2 (caso único), v3 (paridade e dashboard) e v4 (paridade de regras)
 ```
 

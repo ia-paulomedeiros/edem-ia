@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Aplica 001..016 duas vezes (idempotência) num PostgreSQL 16 ou 17 local e roda os testes
-# (smoke, dashboard, paridade, placeholders). Para o upgrade como em produção, veja run_upgrade.sh.
+# Aplica 001..017 duas vezes (idempotência) num PostgreSQL 16 ou 17 local e roda os testes
+# (smoke, dashboard, paridade, placeholders, mensageria). Para o upgrade como em produção, veja run_upgrade.sh.
 # Uso: supabase/tests/run.sh [conninfo]   ex.: supabase/tests/run.sh "-h localhost -p 5432 -U postgres"
 # Não aponte para o Supabase de produção: o shim cria um schema auth de mentira.
 set -euo pipefail
@@ -15,7 +15,7 @@ $PSQL -d postgres -c "drop database if exists $DB" -c "create database $DB"
 $PSQL -d "$DB" -f supabase/tests/00_supabase_shim.sql -o /dev/null
 
 for round in 1 2; do
-  for f in supabase/001_schema.sql supabase/002_dominio_juridico.sql supabase/003_caso_unico.sql supabase/004_dashboard.sql supabase/005_funil.sql supabase/006_dashboard_periodo.sql supabase/007_fila.sql supabase/008_configuracoes.sql supabase/009_marketing.sql supabase/010_juridico_agenda.sql supabase/011_caso_completo.sql supabase/012_fila_por_lead.sql supabase/013_fluxo_laquila.sql supabase/014_paridade_regras.sql supabase/015_paridade_automacoes.sql supabase/016_placeholders_laquila.sql; do
+  for f in supabase/001_schema.sql supabase/002_dominio_juridico.sql supabase/003_caso_unico.sql supabase/004_dashboard.sql supabase/005_funil.sql supabase/006_dashboard_periodo.sql supabase/007_fila.sql supabase/008_configuracoes.sql supabase/009_marketing.sql supabase/010_juridico_agenda.sql supabase/011_caso_completo.sql supabase/012_fila_por_lead.sql supabase/013_fluxo_laquila.sql supabase/014_paridade_regras.sql supabase/015_paridade_automacoes.sql supabase/016_placeholders_laquila.sql supabase/017_mensageria.sql; do
     $PSQL -d "$DB" -f "$f" -o /dev/null
     echo "ok  [rodada $round] $f"
   done
@@ -25,3 +25,4 @@ $PSQL -d "$DB" -f supabase/tests/10_smoke.sql
 $PSQL -d "$DB" -f supabase/tests/20_dashboard.sql
 $PSQL -d "$DB" -f supabase/tests/30_paridade.sql
 $PSQL -d "$DB" -f supabase/tests/40_placeholders.sql
+$PSQL -d "$DB" -f supabase/tests/50_mensageria.sql

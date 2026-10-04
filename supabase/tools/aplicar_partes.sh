@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Aplica as partes 014a.., 015a.. e 016a.. no Supabase pelo psql, na ordem, parando na primeira que
-# não devolver resultado = OK. A senha é pedida sem eco e não fica no histórico.
+# Aplica as partes 014a.., 015a.., 016a.. e 017a.. no Supabase pelo psql, na ordem, parando na primeira
+# que não devolver resultado = OK. A senha é pedida sem eco e não fica no histórico.
 #
 # Uso (na raiz do repositório):
-#   PGHOST=<host do Session pooler> supabase/tools/aplicar_partes.sh
+#   PGHOST=<host do Session pooler> supabase/tools/aplicar_partes.sh            # 014..017
+#   PGHOST=<host do Session pooler> supabase/tools/aplicar_partes.sh 017        # só as partes da 017
 # O host está em Supabase → Connect → Session pooler (ex.: aws-1-sa-east-1.pooler.supabase.com).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -16,7 +17,9 @@ if [ -z "${PGPASSWORD:-}" ]; then
 fi
 
 psql -v ON_ERROR_STOP=1 -At -c "select 'conectado em ' || current_database() || ' · ' || version()"
-for f in supabase/partes/014*.sql supabase/partes/015*.sql supabase/partes/016*.sql; do
+MIGS=("${@:-014 015 016 017}"); MIGS=(${MIGS[*]})
+files=(); for m in "${MIGS[@]}"; do files+=(supabase/partes/"$m"*.sql); done
+for f in "${files[@]}"; do
   out=$(psql -v ON_ERROR_STOP=1 -q -At -F ' | ' -f "$f" | tail -1)
   case "$out" in
     *"| OK |"*) echo "ok  $(basename "$f"): $out" ;;
@@ -24,3 +27,4 @@ for f in supabase/partes/014*.sql supabase/partes/015*.sql supabase/partes/016*.
   esac
 done
 psql -At -c "select 'v_clientes: ' || coalesce(to_regclass('public.v_clientes')::text, 'NÃO EXISTE') || ' · leads: ' || (select count(*) from public.v_clientes)"
+psql -At -c "select 'v_conversas: ' || coalesce(to_regclass('public.v_conversas')::text, 'NÃO EXISTE (rode a 017)')"
