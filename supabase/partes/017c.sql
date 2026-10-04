@@ -265,125 +265,89 @@ language sql stable set search_path = public as $$
 $$;
 
 -- -----------------------------------------------------------------------------
--- 4. Respostas rápidas e buckets de envio
--- Mídia de mensagem (messages.media / quick_replies): {"bucket": "respostas",
--- "storage_path": "<office_id>/arquivo.ogg", "mime_type": "audio/ogg",
--- "filename": "arquivo.ogg", "tipo": "audio|document|image|video"}.
+-- 3f. Contexto da IA e métricas só com kind = 'chat'
+-- Nota interna e mensagem de evento ficam fora do que a IA lê e do que se mede
+-- como conversa. A constraint garante no banco que mensagem de contato e da IA
+-- é sempre chat (evento = sistema, nota = humano, ambos saindo), então o que
+-- filtra por sender = 'ia' ou direction = 'in' (dashboard_investimento_p,
+-- marketing_tokens_split, mensagens da IA em dashboard_produtividade_p, a
+-- "abertura" do funil, ingest_media) já não pode contar nota nem evento.
 -- -----------------------------------------------------------------------------
-create table if not exists public.quick_replies (
-  id         uuid primary key default gen_random_uuid(),
-  office_id  uuid not null references public.offices(id) on delete cascade,
-  group_name text not null default 'Geral',
-  title      text not null,
-  shortcut   text,
-  kind       text not null default 'texto' check (kind in ('texto','audio','arquivo')),
-  body       text,
-  media_path text,                       -- caminho no bucket 'respostas', começando pelo office_id
-  mime_type  text,
-  active     boolean not null default true,
-  created_by uuid references auth.users(id),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint quick_replies_conteudo check (
-    (kind = 'texto' and coalesce(btrim(body), '') <> '') or (kind in ('audio','arquivo') and media_path is not null))
-);
-create unique index if not exists quick_replies_shortcut_uidx on public.quick_replies (office_id, lower(shortcut)) where shortcut is not null and active;
-select public.apply_office_rls('quick_replies', array['admin','advogado']);
-
 do $$
-declare b text;
 begin
-  if exists (select 1 from pg_namespace where nspname = 'storage')
-     and exists (select 1 from pg_tables where schemaname = 'storage' and tablename = 'buckets') then
-    foreach b in array array['respostas','pecas','contratos'] loop
-      insert into storage.buckets (id, name, public) values (b, b, false) on conflict (id) do nothing;
-      execute format('drop policy if exists %I on storage.objects', b || '_select');
-      execute format($p$create policy %I on storage.objects for select to authenticated
-        using (bucket_id = %L and public.is_office_member((storage.foldername(name))[1]::uuid))$p$, b || '_select', b);
-      execute format('drop policy if exists %I on storage.objects', b || '_insert');
-      execute format($p$create policy %I on storage.objects for insert to authenticated
-        with check (bucket_id = %L and public.is_office_member((storage.foldername(name))[1]::uuid))$p$, b || '_insert', b);
-      execute format('drop policy if exists %I on storage.objects', b || '_delete');
-      execute format($p$create policy %I on storage.objects for delete to authenticated
-        using (bucket_id = %L and public.is_office_member((storage.foldername(name))[1]::uuid))$p$, b || '_delete', b);
-    end loop;
+  if not exists (select 1 from pg_constraint where conname = 'messages_kind_sender') then
+    alter table public.messages add constraint messages_kind_sender check (
+      kind = 'chat' or (kind = 'evento' and sender = 'sistema') or (kind = 'nota' and sender = 'humano'));
   end if;
 end $$;
 
--- Normaliza a mídia: bucket permitido e caminho dentro da pasta do escritório.
-create or replace function public.media_normalize(p_office uuid, p_media jsonb)
-returns jsonb language plpgsql immutable set search_path = public as $$
-declare v_bucket text := p_media->>'bucket'; v_path text := btrim(coalesce(p_media->>'storage_path', p_media->>'path', ''), '/');
-        v_mime text := p_media->>'mime_type'; v_tipo text := p_media->>'tipo';
-begin
-  if p_media is null or p_media = 'null'::jsonb then return null; end if;
-  if v_bucket is null and split_part(v_path, '/', 1) in ('respostas','provas','pecas','contratos') then
-    v_bucket := split_part(v_path, '/', 1); v_path := substr(v_path, length(v_bucket) + 2);
-  end if;
-  if v_bucket is null or v_bucket not in ('respostas','provas','pecas','contratos') then
-    raise exception 'bucket de mídia inválido: % (use respostas, provas, pecas ou contratos)', coalesce(v_bucket, '—');
-  end if;
-  if split_part(v_path, '/', 1) <> p_office::text then raise exception 'storage_path precisa começar pelo escritório: %/…', p_office; end if;
-  if v_tipo is null then
-    v_tipo := case when v_mime like 'audio/%' then 'audio' when v_mime like 'image/%' then 'image'
-                   when v_mime like 'video/%' then 'video' else 'document' end;
-  end if;
-  if v_tipo not in ('audio','document','image','video') then raise exception 'tipo de mídia inválido: %', v_tipo; end if;
-  return jsonb_build_object('bucket', v_bucket, 'storage_path', v_path, 'mime_type', v_mime, 'tipo', v_tipo,
-    'filename', coalesce(nullif(p_media->>'filename', ''), regexp_replace(v_path, '^.*/', '')), 'caption', p_media->>'caption');
-end; $$;
-
--- {{nome}}, {{primeiro_nome}}, {{escritorio}}, {{atendente}}
-create or replace function public.quick_reply_fill(p_text text, p_conv uuid, p_user uuid)
-returns text language sql stable security definer set search_path = public as $$
-  select replace(replace(replace(replace(coalesce(p_text, ''),
-           '{{nome}}', coalesce(ct.name, '')),
-           '{{primeiro_nome}}', coalesce(split_part(btrim(ct.name), ' ', 1), '')),
-           '{{escritorio}}', coalesce(o.name, '')),
-           '{{atendente}}', case when p_user is null then 'Equipe' else public.user_nome(p_user) end)
-  from public.conversations c join public.contacts ct on ct.id = c.contact_id join public.offices o on o.id = c.office_id
-  where c.id = p_conv;
+-- Contexto do agente (001): mesma assinatura, só chat. Notas da equipe não vão
+-- para o modelo (ele as repetiria ao cliente como se fossem dele).
+create or replace function public.conversation_context(p_conversation uuid, p_limit integer default 30)
+returns jsonb language sql stable set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'role', case when m.direction = 'in' then 'user' else 'assistant' end,
+           'sender', m.sender, 'body', m.body, 'media', m.media, 'at', m.created_at
+         ) order by m.created_at), '[]'::jsonb)
+  from (
+    select * from public.messages where conversation_id = p_conversation and kind = 'chat'
+    order by created_at desc limit p_limit
+  ) m;
 $$;
 
-create or replace function public.quick_reply_render(p_quick_reply uuid, p_conv uuid)
-returns jsonb language plpgsql security definer set search_path = public as $$
-declare q public.quick_replies; c public.conversations;
-begin
-  if auth.uid() is null then raise exception 'exige usuário'; end if;
-  select * into c from public.conversations where id = p_conv;
-  if c.id is null or not public.can_see_conversation(p_conv) then raise exception 'conversa não encontrada'; end if;
-  select * into q from public.quick_replies where id = p_quick_reply and office_id = c.office_id and active;
-  if q.id is null then raise exception 'resposta rápida não encontrada'; end if;
-  return jsonb_build_object('quick_reply_id', q.id, 'kind', q.kind, 'body', nullif(public.quick_reply_fill(q.body, p_conv, auth.uid()), ''),
-    'media', case when q.media_path is not null then public.media_normalize(c.office_id,
-               jsonb_build_object('bucket', 'respostas', 'storage_path', q.media_path, 'mime_type', q.mime_type)) end);
-end; $$;
-
--- Envio pela tela de conversa (texto, mídia ou resposta rápida). Grava a linha
--- pendente; o WA 03 envia. Enviar = assumir (takeover pelo gatilho).
-create or replace function public.conversation_send(p_conv uuid, p_body text default null, p_media jsonb default null, p_quick_reply uuid default null)
-returns public.messages language plpgsql security definer set search_path = public as $$
-declare c public.conversations; m public.messages; v_body text := p_body; v_media jsonb; q jsonb;
-begin
-  c := public.conversation_guard(p_conv);
-  if not public.conv_ativa(c.status) then raise exception 'conversa encerrada: reabra antes de enviar'; end if;
-  if p_quick_reply is not null then
-    q := public.quick_reply_render(p_quick_reply, p_conv);
-    v_body := coalesce(nullif(btrim(p_body), ''), q->>'body');
-    v_media := q->'media';
-    if v_media = 'null'::jsonb then v_media := null; end if;
-  end if;
-  if p_media is not null then v_media := public.media_normalize(c.office_id, p_media); end if;
-  if coalesce(btrim(v_body), '') = '' and v_media is null then raise exception 'mensagem vazia'; end if;
-  if v_media is not null and v_media->>'caption' is null and v_media->>'tipo' in ('image','video','document') and v_body is not null then
-    v_media := v_media || jsonb_build_object('caption', v_body);
-  end if;
-  insert into public.messages (office_id, conversation_id, direction, sender, body, media, status, sent_by, ai_meta)
-  values (c.office_id, p_conv, 'out', 'humano', nullif(btrim(v_body), ''), v_media, 'pending', auth.uid(),
-          case when p_quick_reply is not null then jsonb_build_object('quick_reply_id', p_quick_reply) end)
-  returning * into m;
-  return m;
-end; $$;
+-- Jornada (014): primeira resposta e mensagens por lead só com chat.
+create or replace function public.dashboard_jornada_p(p_office uuid, p_from date DEFAULT NULL::date, p_to date DEFAULT NULL::date, p_member uuid DEFAULT NULL::uuid)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'public'
+AS $$
+  with b as (select * from public.period_bounds(p_office, p_from, p_to)),
+  coorte as (
+    select l.id, l.phase, l.created_at, public.lead_journey_stage(l.id) as etapa_atual from public.leads l, b
+    where l.office_id = p_office and l.created_at >= b.p_start and l.created_at < b.p_end
+      and (p_member is null or l.assigned_to = p_member)
+  ),
+  trocas as (
+    select e.lead_id, (e.payload->>'from')::public.case_phase as fase, e.created_at,
+           coalesce(lag(e.created_at) over (partition by e.lead_id order by e.seq), c.created_at) as inicio
+    from public.case_events e join coorte c on c.id = e.lead_id
+    where e.type = 'phase_changed'
+  ),
+  st as (
+    select s.*, public.journey_stage_agents(s.role) as agentes,
+      (select count(*) from coorte c where public.lead_reached_stage(c.id, s.role)) as n,
+      (select count(*) from coorte c where c.etapa_atual = s.role) as em_fluxo,
+      (select count(*) from coorte c where public.lead_reached_stage(c.id, s.role) and public.lead_done_stage(c.id, s.role)) as concluido,
+      (select count(distinct e.lead_id) from public.case_events e join coorte c on c.id = e.lead_id
+        where e.type = 'intervention_requested' and e.actor_agent = any (public.journey_stage_agents(s.role))) as interv_humana,
+      (select round((avg(extract(epoch from (t.created_at - t.inicio))) / 3600)::numeric, 1)
+         from trocas t where t.fase = any (s.fases) and s.role not in ('saneador','redator')) as tempo_medio_horas
+    from public.journey_stages() s
+  ),
+  topo as (select coalesce(max(n) filter (where ordem = 1), 0) as n from st)
+  select jsonb_build_object(
+    'periodo', jsonb_build_object('de', b.p_start::date, 'ate', (b.p_end - interval '1 day')::date),
+    'leads', (select count(*) from coorte),
+    'etapas', (select coalesce(jsonb_agg(jsonb_build_object(
+                 'ordem', s.ordem, 'agente', s.role, 'titulo', s.titulo, 'fases', to_jsonb(s.fases), 'agentes', to_jsonb(s.agentes),
+                 'n', s.n, 'pct_topo', case when topo.n = 0 then 0 else round(s.n::numeric / topo.n * 100) end,
+                 'concluido', s.concluido, 'em_fluxo', s.em_fluxo, 'interv_humana', s.interv_humana,
+                 'tempo_medio_horas', s.tempo_medio_horas) order by s.ordem), '[]'::jsonb) from st s, topo),
+    'primeira_resposta_min', (select round(avg(extract(epoch from (o - i)) / 60)::numeric, 1) from (
+        select (select min(m.created_at) from public.messages m join public.conversations cv on cv.id = m.conversation_id where cv.lead_id = c.id and m.direction = 'in' and m.kind = 'chat') as i,
+               (select min(m.created_at) from public.messages m join public.conversations cv on cv.id = m.conversation_id where cv.lead_id = c.id and m.direction = 'out' and m.kind = 'chat') as o
+        from coorte c) t where o is not null and i is not null),
+    'dias_ate_contrato', (select round(avg(extract(epoch from (k.signed_at - c.created_at)) / 86400)::numeric, 1)
+                          from coorte c join public.contracts k on k.lead_id = c.id and k.status = 'assinado'),
+    'mensagens_por_lead', (select round(avg(n)::numeric, 1) from (
+        select count(m.id) as n from coorte c
+        left join public.conversations cv on cv.lead_id = c.id
+        left join public.messages m on m.conversation_id = cv.id and m.kind = 'chat' group by c.id) t)
+  )
+  from b
+  where public.is_office_member(p_office);
+$$;
 
 -- ---------- Verificação da parte 017c: deve voltar uma linha com resultado = OK
 select '017c' as parte,
@@ -394,20 +358,17 @@ from (values
     ('função conversation_archive', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_archive')),
     ('função conversation_assign', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_assign')),
     ('função conversation_close', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_close')),
+    ('função conversation_context', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_context')),
     ('função conversation_event', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_event')),
     ('função conversation_guard', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_guard')),
     ('função conversation_hide', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_hide')),
     ('função conversation_mark_read', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_mark_read')),
     ('função conversation_note', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_note')),
     ('função conversation_reopen', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_reopen')),
-    ('função conversation_send', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_send')),
     ('função conversation_set_ai', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_set_ai')),
     ('função conversation_status_titulo', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_status_titulo')),
     ('função conversation_transfer_department', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_transfer_department')),
-    ('função media_normalize', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'media_normalize')),
-    ('função quick_reply_fill', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'quick_reply_fill')),
-    ('função quick_reply_render', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'quick_reply_render')),
+    ('função dashboard_jornada_p', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'dashboard_jornada_p')),
     ('view v_conversas', to_regclass('public.v_conversas') is not null),
-    ('tabela quick_replies', to_regclass('public.quick_replies') is not null),
     ('coluna leads.ad_referral', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'leads' and column_name = 'ad_referral'))
 ) as v(item, ok);

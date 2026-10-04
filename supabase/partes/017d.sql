@@ -7,6 +7,244 @@
 -- resultado tem que dizer resultado = OK.
 -- =============================================================================
 
+-- Produtividade (014): mensagens por membro só com chat (nota não é mensagem ao cliente).
+create or replace function public.dashboard_produtividade_p(p_office uuid, p_from date DEFAULT NULL::date, p_to date DEFAULT NULL::date, p_member uuid DEFAULT NULL::uuid)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'public'
+AS $$
+  with b as (select * from public.period_bounds(p_office, p_from, p_to)),
+  concl as (
+    select h.* from public.human_interventions h, b
+    where h.office_id = p_office and h.status = 'resolvida'
+      and h.resolved_at >= b.p_start and h.resolved_at < b.p_end
+      and (p_member is null or h.claimed_by = p_member)
+  ),
+  nomes as (
+    select om.user_id, coalesce(pr.full_name, 'Membro') as nome
+    from public.office_members om left join public.profiles pr on pr.user_id = om.user_id
+    where om.office_id = p_office
+  ),
+  ranking as (
+    select c.claimed_by, coalesce(n.nome, 'Sem responsável') as nome, count(*) as concluidas,
+           round((avg(extract(epoch from (c.resolved_at - c.created_at))) / 3600)::numeric, 1) as tempo_medio_horas
+    from concl c left join nomes n on n.user_id = c.claimed_by
+    group by c.claimed_by, n.nome
+  ),
+  dias as (select generate_series(b.p_start, b.p_end - interval '1 day', interval '1 day')::date as dia from b)
+  select jsonb_build_object(
+    'periodo', jsonb_build_object('de', b.p_start::date, 'ate', (b.p_end - interval '1 day')::date),
+    'concluidas', (select count(*) from concl),
+    'em_andamento', (select count(*) from public.human_interventions h
+                     where h.office_id = p_office and h.status = 'em_atendimento' and (p_member is null or h.claimed_by = p_member)),
+    'pendentes', (select count(*) from public.human_interventions h where h.office_id = p_office and h.status = 'pendente'),
+    'tempo_medio_horas', (select round((avg(extract(epoch from (resolved_at - created_at))) / 3600)::numeric, 1) from concl),
+    'pessoas', (select count(distinct claimed_by) from concl where claimed_by is not null),
+    'tipos', (select count(distinct category) from concl),
+    'maior_produtor', (select jsonb_build_object('user_id', claimed_by, 'nome', nome, 'concluidas', concluidas)
+                       from ranking order by concluidas desc limit 1),
+    'por_forma', (select coalesce(jsonb_agg(jsonb_build_object('forma', forma, 'n', n,
+                    'pct', case when (select count(*) from concl) = 0 then 0 else round(n::numeric / (select count(*) from concl) * 100) end) order by n desc), '[]'::jsonb)
+                  from (select coalesce(outcome, 'nao_informada') as forma, count(*) as n from concl group by 1) t),
+    'por_tipo', (select coalesce(jsonb_agg(jsonb_build_object('tipo', tipo, 'n', n,
+                   'pct', case when (select count(*) from concl) = 0 then 0 else round(n::numeric / (select count(*) from concl) * 100) end) order by n desc), '[]'::jsonb)
+                 from (select category as tipo, count(*) as n from concl group by 1) t),
+    'ranking', (select coalesce(jsonb_agg(jsonb_build_object('user_id', claimed_by, 'nome', nome, 'concluidas', concluidas,
+                  'tempo_medio_horas', tempo_medio_horas) order by concluidas desc), '[]'::jsonb) from ranking),
+    'por_dia', (select coalesce(jsonb_agg(jsonb_build_object('dia', d.dia,
+                  'concluidas', (select count(*) from concl c where c.resolved_at::date = d.dia)) order by d.dia), '[]'::jsonb) from dias d),
+    'membros', (select coalesce(jsonb_agg(jsonb_build_object(
+                  'user_id', n.user_id, 'nome', n.nome,
+                  'takeovers', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor_user_id = n.user_id and e.type = 'takeover' and e.created_at >= b.p_start and e.created_at < b.p_end),
+                  'mensagens', (select count(*) from public.messages m, b where m.office_id = p_office and m.sent_by = n.user_id and m.kind = 'chat' and m.created_at >= b.p_start and m.created_at < b.p_end),
+                  'fases_movidas', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor_user_id = n.user_id and e.type = 'phase_changed' and e.created_at >= b.p_start and e.created_at < b.p_end),
+                  'contratos_assinados', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor_user_id = n.user_id and e.type = 'contract_signed' and e.created_at >= b.p_start and e.created_at < b.p_end)
+                ) order by n.nome), '[]'::jsonb) from nomes n),
+    'ia', jsonb_build_object(
+      'mensagens', (select count(*) from public.messages m, b where m.office_id = p_office and m.sender = 'ia' and m.created_at >= b.p_start and m.created_at < b.p_end),
+      'fases_movidas', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor = 'ia' and e.type = 'phase_changed' and e.created_at >= b.p_start and e.created_at < b.p_end),
+      'intervencoes_pedidas', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor = 'ia' and e.type = 'intervention_requested' and e.created_at >= b.p_start and e.created_at < b.p_end))
+  )
+  from b
+  where public.is_office_member(p_office);
+$$;
+
+-- Fila (007): mensagens desde a abertura da intervenção, só chat. Mesmas colunas.
+create or replace view public.v_intervention_cards
+with (security_invoker = true) as
+select
+  h.id, h.office_id, h.lead_id, h.conversation_id,
+  h.category, g.grupo, g.titulo as grupo_titulo, g.ordem as grupo_ordem,
+  h.reason, h.note, h.tags, h.priority, h.status, h.requested_by_actor,
+  h.claimed_by, pr.full_name as responsavel_nome, h.claimed_at, h.resolved_at, h.outcome, h.created_at,
+  ct.name as contact_name, ct.wa_id as contact_phone,
+  l.phase, q.faixa, q.verbas_total, l.prescricao_em,
+  h.calls_count,
+  (select count(*) from public.messages m where m.conversation_id = h.conversation_id and m.created_at >= h.created_at and m.kind = 'chat') as msgs_count,
+  (current_date - h.created_at::date) as dias
+from public.human_interventions h
+join public.leads l on l.id = h.lead_id
+join public.contacts ct on ct.id = l.contact_id
+left join public.lead_qualification q on q.lead_id = l.id
+left join public.profiles pr on pr.user_id = h.claimed_by
+cross join lateral public.intervention_group(h.category) g;
+grant select on public.v_intervention_cards to authenticated;
+
+-- Custo de aquisição (002): mensagens humanas sem as notas. Mesmas colunas.
+create or replace view public.lead_acquisition_cost
+with (security_invoker = true) as
+select
+  l.id as lead_id,
+  l.office_id,
+  count(m.id) filter (where m.sender = 'ia')                              as mensagens_ia,
+  count(m.id) filter (where m.sender = 'humano')                          as mensagens_humano,
+  coalesce(sum((m.ai_meta->>'tokens_in')::numeric), 0)                    as tokens_in,
+  coalesce(sum((m.ai_meta->>'tokens_out')::numeric), 0)                   as tokens_out,
+  coalesce(sum((m.ai_meta->>'cost_usd')::numeric), 0)                     as cost_usd
+from public.leads l
+left join public.conversations c on c.lead_id = l.id
+left join public.messages m on m.conversation_id = c.id and m.direction = 'out' and m.kind = 'chat'
+group by l.id, l.office_id;
+
+-- Destino do envio (015): só chat pendente (defesa extra; o WA 03 já filtra).
+create or replace function public.mensageria_destino(p_message uuid)
+returns table (message_id uuid, office_id uuid, provider text, body text, template jsonb, wa_id text, phone_number_id text,
+               token text, provider_config jsonb)
+language sql stable security definer set search_path = public as $$
+  select m.id, m.office_id, public.mensageria_provider(m.office_id), m.body, m.template, ct.wa_id, wn.phone_number_id,
+         case public.mensageria_provider(m.office_id)
+           when 'meta_whatsapp' then (select s.decrypted_secret from vault.decrypted_secrets s where s.name = wn.token_secret_name)
+           else public.integration_secret(m.office_id, public.mensageria_provider(m.office_id)) end,
+         (select i.config from public.integrations i where i.office_id = m.office_id and i.provider = public.mensageria_provider(m.office_id))
+  from public.messages m
+  join public.conversations c on c.id = m.conversation_id
+  join public.contacts ct on ct.id = c.contact_id
+  left join public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id
+  where m.id = p_message and m.status = 'pending' and m.direction = 'out' and m.kind = 'chat';
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 4. Respostas rápidas e buckets de envio
+-- Mídia de mensagem (messages.media / quick_replies): {"bucket": "respostas",
+-- "storage_path": "<office_id>/arquivo.ogg", "mime_type": "audio/ogg",
+-- "filename": "arquivo.ogg", "tipo": "audio|document|image|video"}.
+-- -----------------------------------------------------------------------------
+create table if not exists public.quick_replies (
+  id         uuid primary key default gen_random_uuid(),
+  office_id  uuid not null references public.offices(id) on delete cascade,
+  group_name text not null default 'Geral',
+  title      text not null,
+  shortcut   text,
+  kind       text not null default 'texto' check (kind in ('texto','audio','arquivo')),
+  body       text,
+  media_path text,                       -- caminho no bucket 'respostas', começando pelo office_id
+  mime_type  text,
+  active     boolean not null default true,
+  created_by uuid references auth.users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint quick_replies_conteudo check (
+    (kind = 'texto' and coalesce(btrim(body), '') <> '') or (kind in ('audio','arquivo') and media_path is not null))
+);
+create unique index if not exists quick_replies_shortcut_uidx on public.quick_replies (office_id, lower(shortcut)) where shortcut is not null and active;
+select public.apply_office_rls('quick_replies', array['admin','advogado']);
+
+do $$
+declare b text;
+begin
+  if exists (select 1 from pg_namespace where nspname = 'storage')
+     and exists (select 1 from pg_tables where schemaname = 'storage' and tablename = 'buckets') then
+    foreach b in array array['respostas','pecas','contratos'] loop
+      insert into storage.buckets (id, name, public) values (b, b, false) on conflict (id) do nothing;
+      execute format('drop policy if exists %I on storage.objects', b || '_select');
+      execute format($p$create policy %I on storage.objects for select to authenticated
+        using (bucket_id = %L and public.is_office_member((storage.foldername(name))[1]::uuid))$p$, b || '_select', b);
+      execute format('drop policy if exists %I on storage.objects', b || '_insert');
+      execute format($p$create policy %I on storage.objects for insert to authenticated
+        with check (bucket_id = %L and public.is_office_member((storage.foldername(name))[1]::uuid))$p$, b || '_insert', b);
+      execute format('drop policy if exists %I on storage.objects', b || '_delete');
+      execute format($p$create policy %I on storage.objects for delete to authenticated
+        using (bucket_id = %L and public.is_office_member((storage.foldername(name))[1]::uuid))$p$, b || '_delete', b);
+    end loop;
+  end if;
+end $$;
+
+-- Normaliza a mídia: bucket permitido e caminho dentro da pasta do escritório.
+create or replace function public.media_normalize(p_office uuid, p_media jsonb)
+returns jsonb language plpgsql immutable set search_path = public as $$
+declare v_bucket text := p_media->>'bucket'; v_path text := btrim(coalesce(p_media->>'storage_path', p_media->>'path', ''), '/');
+        v_mime text := p_media->>'mime_type'; v_tipo text := p_media->>'tipo';
+begin
+  if p_media is null or p_media = 'null'::jsonb then return null; end if;
+  if v_bucket is null and split_part(v_path, '/', 1) in ('respostas','provas','pecas','contratos') then
+    v_bucket := split_part(v_path, '/', 1); v_path := substr(v_path, length(v_bucket) + 2);
+  end if;
+  if v_bucket is null or v_bucket not in ('respostas','provas','pecas','contratos') then
+    raise exception 'bucket de mídia inválido: % (use respostas, provas, pecas ou contratos)', coalesce(v_bucket, '—');
+  end if;
+  if split_part(v_path, '/', 1) <> p_office::text then raise exception 'storage_path precisa começar pelo escritório: %/…', p_office; end if;
+  if v_tipo is null then
+    v_tipo := case when v_mime like 'audio/%' then 'audio' when v_mime like 'image/%' then 'image'
+                   when v_mime like 'video/%' then 'video' else 'document' end;
+  end if;
+  if v_tipo not in ('audio','document','image','video') then raise exception 'tipo de mídia inválido: %', v_tipo; end if;
+  return jsonb_build_object('bucket', v_bucket, 'storage_path', v_path, 'mime_type', v_mime, 'tipo', v_tipo,
+    'filename', coalesce(nullif(p_media->>'filename', ''), regexp_replace(v_path, '^.*/', '')), 'caption', p_media->>'caption');
+end; $$;
+
+-- {{nome}}, {{primeiro_nome}}, {{escritorio}}, {{atendente}}
+create or replace function public.quick_reply_fill(p_text text, p_conv uuid, p_user uuid)
+returns text language sql stable security definer set search_path = public as $$
+  select replace(replace(replace(replace(coalesce(p_text, ''),
+           '{{nome}}', coalesce(ct.name, '')),
+           '{{primeiro_nome}}', coalesce(split_part(btrim(ct.name), ' ', 1), '')),
+           '{{escritorio}}', coalesce(o.name, '')),
+           '{{atendente}}', case when p_user is null then 'Equipe' else public.user_nome(p_user) end)
+  from public.conversations c join public.contacts ct on ct.id = c.contact_id join public.offices o on o.id = c.office_id
+  where c.id = p_conv;
+$$;
+
+create or replace function public.quick_reply_render(p_quick_reply uuid, p_conv uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare q public.quick_replies; c public.conversations;
+begin
+  if auth.uid() is null then raise exception 'exige usuário'; end if;
+  select * into c from public.conversations where id = p_conv;
+  if c.id is null or not public.can_see_conversation(p_conv) then raise exception 'conversa não encontrada'; end if;
+  select * into q from public.quick_replies where id = p_quick_reply and office_id = c.office_id and active;
+  if q.id is null then raise exception 'resposta rápida não encontrada'; end if;
+  return jsonb_build_object('quick_reply_id', q.id, 'kind', q.kind, 'body', nullif(public.quick_reply_fill(q.body, p_conv, auth.uid()), ''),
+    'media', case when q.media_path is not null then public.media_normalize(c.office_id,
+               jsonb_build_object('bucket', 'respostas', 'storage_path', q.media_path, 'mime_type', q.mime_type)) end);
+end; $$;
+
+-- Envio pela tela de conversa (texto, mídia ou resposta rápida). Grava a linha
+-- pendente; o WA 03 envia. Enviar = assumir (takeover pelo gatilho).
+create or replace function public.conversation_send(p_conv uuid, p_body text default null, p_media jsonb default null, p_quick_reply uuid default null)
+returns public.messages language plpgsql security definer set search_path = public as $$
+declare c public.conversations; m public.messages; v_body text := p_body; v_media jsonb; q jsonb;
+begin
+  c := public.conversation_guard(p_conv);
+  if not public.conv_ativa(c.status) then raise exception 'conversa encerrada: reabra antes de enviar'; end if;
+  if p_quick_reply is not null then
+    q := public.quick_reply_render(p_quick_reply, p_conv);
+    v_body := coalesce(nullif(btrim(p_body), ''), q->>'body');
+    v_media := q->'media';
+    if v_media = 'null'::jsonb then v_media := null; end if;
+  end if;
+  if p_media is not null then v_media := public.media_normalize(c.office_id, p_media); end if;
+  if coalesce(btrim(v_body), '') = '' and v_media is null then raise exception 'mensagem vazia'; end if;
+  if v_media is not null and v_media->>'caption' is null and v_media->>'tipo' in ('image','video','document') and v_body is not null then
+    v_media := v_media || jsonb_build_object('caption', v_body);
+  end if;
+  insert into public.messages (office_id, conversation_id, direction, sender, body, media, status, sent_by, ai_meta)
+  values (c.office_id, p_conv, 'out', 'humano', nullif(btrim(v_body), ''), v_media, 'pending', auth.uid(),
+          case when p_quick_reply is not null then jsonb_build_object('quick_reply_id', p_quick_reply) end)
+  returning * into m;
+  return m;
+end; $$;
+
 -- -----------------------------------------------------------------------------
 -- 5. Envio (WA 03): destino + mídia + trava da janela de 24h.
 -- Só kind = 'chat', direction = 'out', status = 'pending'. Janela fechada sem
@@ -131,228 +369,23 @@ begin
   return jsonb_build_object('enviadas', n_ok, 'falharam', n_falha);
 end; $$;
 
--- -----------------------------------------------------------------------------
--- 7. Templates da Meta: sincronização e envio para aprovação (n8n 12)
--- -----------------------------------------------------------------------------
-alter table public.wa_templates
-  add column if not exists whatsapp_number_id uuid references public.whatsapp_numbers(id) on delete set null,
-  add column if not exists components jsonb,
-  add column if not exists rejected_reason text,
-  add column if not exists last_sync_at timestamptz,
-  add column if not exists submit_requested_at timestamptz,
-  add column if not exists submitted_at timestamptz,
-  add column if not exists submit_error text;
-alter table public.wa_templates drop constraint if exists wa_templates_status_check;
-alter table public.wa_templates add constraint wa_templates_status_check
-  check (status in ('pendente','aprovado','rejeitado','pausado','desativado'));
-
-create or replace function public.wa_template_status(p_meta text)
-returns text language sql immutable set search_path = public as $$
-  select case upper(coalesce(p_meta, '')) when 'APPROVED' then 'aprovado' when 'REJECTED' then 'rejeitado'
-              when 'PAUSED' then 'pausado' when 'DISABLED' then 'desativado' else 'pendente' end;
-$$;
-
--- Números com WABA para o GET /{waba_id}/message_templates (service_role).
-create or replace function public.templates_sync_targets()
-returns table(whatsapp_number_id uuid, office_id uuid, waba_id text, token text)
-language sql stable security definer set search_path = public as $$
-  select wn.id, wn.office_id, wn.waba_id, (select s.decrypted_secret from vault.decrypted_secrets s where s.name = wn.token_secret_name)
-  from public.whatsapp_numbers wn
-  where wn.active and wn.waba_id is not null
-    and public.mensageria_provider(wn.office_id) = 'meta_whatsapp';
-$$;
-
--- Aplica a lista "data" da Meta. Atualiza os conhecidos e cadastra os criados direto no Gerenciador.
-create or replace function public.templates_sync_apply(p_number uuid, p_templates jsonb)
-returns jsonb language plpgsql security definer set search_path = public as $$
-declare wn public.whatsapp_numbers; t jsonb; v_body text; n_upd int := 0; n_new int := 0; v_id uuid; v_existia boolean;
-begin
-  select * into wn from public.whatsapp_numbers where id = p_number;
-  if wn.id is null then raise exception 'número não encontrado'; end if;
-  for t in select * from jsonb_array_elements(coalesce(p_templates, '[]'::jsonb)) loop
-    select c->>'text' into v_body from jsonb_array_elements(coalesce(t->'components', '[]'::jsonb)) c where upper(c->>'type') = 'BODY' limit 1;
-    select id into v_id from public.wa_templates where office_id = wn.office_id and name = t->>'name' and language = coalesce(t->>'language', 'pt_BR');
-    v_existia := v_id is not null;
-    insert into public.wa_templates (office_id, name, language, category, body, params, status, meta_id, whatsapp_number_id, components,
-                                     rejected_reason, last_sync_at, submitted_at, updated_at)
-    values (wn.office_id, t->>'name', coalesce(t->>'language', 'pt_BR'), coalesce(upper(t->>'category'), 'UTILITY'), coalesce(v_body, ''),
-            (select count(distinct x[1]) from regexp_matches(coalesce(v_body, ''), '\{\{(\d+)\}\}', 'g') x),
-            public.wa_template_status(t->>'status'), t->>'id', wn.id, t->'components',
-            nullif(t->>'rejected_reason', 'NONE'), now(), now(), now())
-    on conflict (office_id, name, language) do update
-      set status = excluded.status, meta_id = excluded.meta_id, category = excluded.category,
-          whatsapp_number_id = coalesce(public.wa_templates.whatsapp_number_id, excluded.whatsapp_number_id),
-          components = excluded.components, rejected_reason = excluded.rejected_reason, last_sync_at = now(),
-          body = case when excluded.body <> '' then excluded.body else public.wa_templates.body end,
-          submitted_at = coalesce(public.wa_templates.submitted_at, now()), submit_error = null, updated_at = now();
-    if v_existia then n_upd := n_upd + 1; else n_new := n_new + 1; end if;
-  end loop;
-  return jsonb_build_object('atualizados', n_upd, 'novos', n_new, 'office_id', wn.office_id);
-end; $$;
-
--- Pedido de aprovação feito pelo admin; o n8n 12 envia (webhook ou varredura).
-create or replace function public.ui_template_submit(p_template uuid)
-returns public.wa_templates language plpgsql security definer set search_path = public as $$
-declare t public.wa_templates;
-begin
-  select * into t from public.wa_templates where id = p_template;
-  if t.id is null or public.member_role(t.office_id) <> 'admin' then raise exception 'template não encontrado'; end if;
-  if t.status = 'aprovado' then raise exception 'template já aprovado'; end if;
-  update public.wa_templates set submit_requested_at = now(), submit_error = null, updated_at = now()
-   where id = p_template returning * into t;
-  return t;
-end; $$;
-
-create or replace function public.templates_pending_submit()
-returns setof uuid language sql stable security definer set search_path = public as $$
-  select t.id from public.wa_templates t
-  where t.submit_requested_at is not null and (t.submitted_at is null or t.submitted_at < t.submit_requested_at)
-  order by t.submit_requested_at limit 20;
-$$;
-
--- Corpo do POST /{waba_id}/message_templates. Só para templates pedidos por um admin.
-create or replace function public.template_submit_payload(p_template uuid)
-returns jsonb language plpgsql stable security definer set search_path = public as $$
-declare t public.wa_templates; wn public.whatsapp_numbers; o public.offices; v_ex jsonb;
-begin
-  select * into t from public.wa_templates where id = p_template;
-  if t.id is null or t.submit_requested_at is null then
-    return jsonb_build_object('ok', false, 'motivo', 'template sem pedido de envio');
-  end if;
-  select * into o from public.offices where id = t.office_id;
-  select * into wn from public.whatsapp_numbers
-   where id = coalesce(t.whatsapp_number_id, (select x.id from public.whatsapp_numbers x where x.office_id = t.office_id and x.active and x.waba_id is not null order by x.created_at limit 1));
-  if wn.id is null or wn.waba_id is null then
-    return jsonb_build_object('ok', false, 'template_id', t.id, 'motivo', 'escritório sem número com WABA');
-  end if;
-  select coalesce(jsonb_agg(case g when 1 then 'Maria' when 2 then coalesce(o.name, 'Escritório') else 'exemplo' end order by g), '[]'::jsonb)
-    into v_ex from generate_series(1, greatest(t.params, 0)) g;
-  return jsonb_build_object('ok', true, 'template_id', t.id, 'whatsapp_number_id', wn.id, 'waba_id', wn.waba_id,
-    'token', (select s.decrypted_secret from vault.decrypted_secrets s where s.name = wn.token_secret_name),
-    'payload', jsonb_build_object('name', t.name, 'language', t.language, 'category', t.category,
-      'components', coalesce(t.components, jsonb_build_array(
-        case when t.params > 0 then jsonb_build_object('type', 'BODY', 'text', t.body, 'example', jsonb_build_object('body_text', jsonb_build_array(v_ex)))
-             else jsonb_build_object('type', 'BODY', 'text', t.body) end))));
-end; $$;
-
-create or replace function public.template_submitted(p_template uuid, p_meta_id text, p_status text, p_error text default null)
-returns public.wa_templates language plpgsql security definer set search_path = public as $$
-declare t public.wa_templates;
-begin
-  update public.wa_templates
-     set meta_id = coalesce(p_meta_id, meta_id),
-         status = case when p_error is not null then status else public.wa_template_status(p_status) end,
-         submitted_at = case when p_error is null then now() else submitted_at end,
-         submit_requested_at = case when p_error is null then submit_requested_at else null end,
-         submit_error = left(p_error, 500), updated_at = now()
-   where id = p_template returning * into t;
-  return t;
-end; $$;
-
--- -----------------------------------------------------------------------------
--- 8. Mesclar conversas (mesmo escritório). Mantém p_keep; p_from é arquivada.
--- Leads diferentes: move mensagens, tarefas e provas; mesmo lead: só mensagens.
--- -----------------------------------------------------------------------------
-create or replace function public.conversation_merge(p_keep uuid, p_from uuid)
-returns jsonb language plpgsql security definer set search_path = public as $$
-declare k public.conversations; f public.conversations; n_msg int := 0; n_task int := 0; n_ev int := 0; v_me uuid := auth.uid();
-begin
-  if p_keep = p_from then raise exception 'escolha duas conversas diferentes'; end if;
-  k := public.conversation_guard(p_keep);
-  f := public.conversation_guard(p_from);
-  if k.office_id <> f.office_id then raise exception 'conversas de escritórios diferentes'; end if;
-  if k.lead_id <> f.lead_id
-     and exists (select 1 from public.contracts x where x.lead_id = k.lead_id and x.status = 'assinado')
-     and exists (select 1 from public.contracts x where x.lead_id = f.lead_id and x.status = 'assinado') then
-    raise exception 'os dois casos têm contrato assinado: não é possível mesclar';
-  end if;
-
-  update public.messages set conversation_id = p_keep where conversation_id = p_from;
-  get diagnostics n_msg = row_count;
-  if k.lead_id <> f.lead_id then
-    update public.tasks set lead_id = k.lead_id where lead_id = f.lead_id;
-    get diagnostics n_task = row_count;
-    update public.evidences set lead_id = k.lead_id where lead_id = f.lead_id;
-    get diagnostics n_ev = row_count;
-  end if;
-
-  update public.conversations c
-     set last_message_at = x.ult, last_message_preview = x.prev,
-         window_expires_at = greatest(k.window_expires_at, f.window_expires_at),
-         unread_count = k.unread_count + f.unread_count
-    from (select max(m.created_at) as ult,
-                 (select left(coalesce(m2.body, '[mídia]'), 140) from public.messages m2 where m2.conversation_id = p_keep and m2.kind = 'chat' order by m2.created_at desc limit 1) as prev
-            from public.messages m where m.conversation_id = p_keep and m.kind = 'chat') x
-   where c.id = p_keep;
-  update public.conversations set status = 'archived', unread_count = 0, last_message_preview = 'Mesclada em outra conversa' where id = p_from;
-
-  perform public.conversation_event(p_keep, 'conversation_merged', 'Conversa mesclada por ' || public.user_nome(v_me) || ' (' || n_msg || ' mensagens)',
-                                    'humano', v_me, jsonb_build_object('from', p_from, 'from_lead', f.lead_id, 'mensagens', n_msg, 'tarefas', n_task, 'provas', n_ev));
-  perform public.conversation_event(p_from, 'conversation_merged_into', 'Mesclada na conversa principal por ' || public.user_nome(v_me),
-                                    'humano', v_me, jsonb_build_object('into', p_keep, 'into_lead', k.lead_id));
-  return jsonb_build_object('keep', p_keep, 'from', p_from, 'mensagens', n_msg, 'tarefas', n_task, 'provas', n_ev);
-end; $$;
-
--- -----------------------------------------------------------------------------
--- 9. Origem do anúncio (Click-to-WhatsApp)
--- -----------------------------------------------------------------------------
-create or replace function public.lead_set_referral(p_lead uuid, p_referral jsonb, p_new_lead boolean default false)
-returns public.leads language plpgsql security definer set search_path = public as $$
-declare l public.leads; v_ref jsonb;
-begin
-  select * into l from public.leads where id = p_lead;
-  if l.id is null or p_referral is null or p_referral = 'null'::jsonb then return l; end if;
-  if l.ad_referral is not null then return l; end if;            -- vale o primeiro anúncio
-  v_ref := jsonb_strip_nulls(jsonb_build_object(
-    'source_id', p_referral->>'source_id', 'source_type', p_referral->>'source_type', 'headline', p_referral->>'headline',
-    'body', p_referral->>'body', 'ctwa_clid', p_referral->>'ctwa_clid', 'source_url', p_referral->>'source_url',
-    'media_type', p_referral->>'media_type', 'recebido_em', now()));
-  update public.leads set ad_referral = v_ref, source = case when p_new_lead then 'meta_ads' else source end
-   where id = p_lead returning * into l;
-  perform public.log_event(l.office_id, l.id, 'ad_referral', 'sistema', null, null, v_ref);
-  return l;
-end; $$;
-
-create or replace view public.v_marketing_anuncios with (security_invoker = true) as
-select l.office_id,
-       l.ad_referral->>'source_id' as anuncio_id,
-       max(l.ad_referral->>'headline') as anuncio_titulo,
-       max(l.ad_referral->>'source_type') as tipo,
-       max(l.ad_referral->>'source_url') as url,
-       count(*) as leads,
-       count(*) filter (where exists (select 1 from public.lead_qualification q where q.lead_id = l.id and q.passed)) as qualificados,
-       count(*) filter (where exists (select 1 from public.contracts k where k.lead_id = l.id and k.status = 'assinado')) as assinados,
-       min(l.created_at) as primeiro_lead_em, max(l.created_at) as ultimo_lead_em
-from public.leads l
-where l.ad_referral is not null
-group by l.office_id, l.ad_referral->>'source_id';
-grant select on public.v_marketing_anuncios to authenticated;
-
 -- ---------- Verificação da parte 017d: deve voltar uma linha com resultado = OK
 select '017d' as parte,
        case when bool_and(ok) then 'OK' else 'FALTOU: ' || string_agg(item, ', ') filter (where not ok) end as resultado,
        count(*) filter (where ok) || ' de ' || count(*) || ' itens' as conferidos
 from (values
-    ('função conversation_merge', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_merge')),
-    ('função lead_set_referral', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'lead_set_referral')),
+    ('função conversation_send', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_send')),
+    ('função dashboard_produtividade_p', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'dashboard_produtividade_p')),
+    ('função media_normalize', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'media_normalize')),
+    ('função mensageria_destino', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'mensageria_destino')),
     ('função mensageria_envio', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'mensageria_envio')),
+    ('função quick_reply_fill', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'quick_reply_fill')),
+    ('função quick_reply_render', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'quick_reply_render')),
     ('função scheduled_cancel', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'scheduled_cancel')),
     ('função scheduled_create', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'scheduled_create')),
     ('função scheduled_dispatch', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'scheduled_dispatch')),
-    ('função template_submit_payload', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'template_submit_payload')),
-    ('função template_submitted', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'template_submitted')),
-    ('função templates_pending_submit', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'templates_pending_submit')),
-    ('função templates_sync_apply', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'templates_sync_apply')),
-    ('função templates_sync_targets', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'templates_sync_targets')),
-    ('função ui_template_submit', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'ui_template_submit')),
-    ('função wa_template_status', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'wa_template_status')),
-    ('view v_marketing_anuncios', to_regclass('public.v_marketing_anuncios') is not null),
-    ('tabela scheduled_messages', to_regclass('public.scheduled_messages') is not null),
-    ('coluna wa_templates.whatsapp_number_id', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'whatsapp_number_id')),
-    ('coluna wa_templates.components', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'components')),
-    ('coluna wa_templates.rejected_reason', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'rejected_reason')),
-    ('coluna wa_templates.last_sync_at', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'last_sync_at')),
-    ('coluna wa_templates.submit_requested_at', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'submit_requested_at')),
-    ('coluna wa_templates.submitted_at', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'submitted_at')),
-    ('coluna wa_templates.submit_error', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'submit_error'))
+    ('view lead_acquisition_cost', to_regclass('public.lead_acquisition_cost') is not null),
+    ('view v_intervention_cards', to_regclass('public.v_intervention_cards') is not null),
+    ('tabela quick_replies', to_regclass('public.quick_replies') is not null),
+    ('tabela scheduled_messages', to_regclass('public.scheduled_messages') is not null)
 ) as v(item, ok);

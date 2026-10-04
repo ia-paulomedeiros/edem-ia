@@ -376,8 +376,9 @@ begin
        where id = r.conv;
     elsif r.i % 9 = 1 and v_member is not null then
       update public.conversations set ai_paused = true, paused_by = v_member, status = 'in_service', assigned_to = v_member where id = r.conv;
-      insert into public.messages (office_id, conversation_id, direction, sender, body, status, kind, sent_by)
-      values (v_office, r.conv, 'out', 'humano', 'Nota interna: conferir CTPS antes de enviar o contrato.', 'sent', 'nota', v_member);
+      insert into public.messages (office_id, conversation_id, direction, sender, body, status, kind, sent_by, created_at)
+      values (v_office, r.conv, 'out', 'humano', 'Nota interna: conferir CTPS antes de enviar o contrato.', 'sent', 'nota', v_member,
+              coalesce((select max(m.created_at) from public.messages m where m.conversation_id = r.conv), now()) + interval '1 minute');
     end if;
     n := n + 1;
   end loop;

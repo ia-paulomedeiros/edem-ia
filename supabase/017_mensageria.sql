@@ -20,6 +20,9 @@
 -- 11. Mensagem não suportada (WA 02) — só fluxo; nada no banco além do texto.
 -- 12. Modelos de petição editáveis pelo escritório (sobreposição + versões).
 --
+-- Contexto da IA e métricas leem só kind = 'chat' (seção 3f); nota e evento nunca
+-- entram no que o agente vê nem no que se mede como conversa.
+--
 -- Compatibilidade: "conversa ativa" passa a ser status in (open, waiting,
 -- in_service) — ai_should_reply, followup_queue, run_monitors e
 -- send_manual_message foram redefinidos. v_conversas traz status_legado
@@ -1043,6 +1046,208 @@ language sql stable set search_path = public as $$
 $$;
 
 -- -----------------------------------------------------------------------------
+-- 3f. Contexto da IA e métricas só com kind = 'chat'
+-- Nota interna e mensagem de evento ficam fora do que a IA lê e do que se mede
+-- como conversa. A constraint garante no banco que mensagem de contato e da IA
+-- é sempre chat (evento = sistema, nota = humano, ambos saindo), então o que
+-- filtra por sender = 'ia' ou direction = 'in' (dashboard_investimento_p,
+-- marketing_tokens_split, mensagens da IA em dashboard_produtividade_p, a
+-- "abertura" do funil, ingest_media) já não pode contar nota nem evento.
+-- -----------------------------------------------------------------------------
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'messages_kind_sender') then
+    alter table public.messages add constraint messages_kind_sender check (
+      kind = 'chat' or (kind = 'evento' and sender = 'sistema') or (kind = 'nota' and sender = 'humano'));
+  end if;
+end $$;
+
+-- Contexto do agente (001): mesma assinatura, só chat. Notas da equipe não vão
+-- para o modelo (ele as repetiria ao cliente como se fossem dele).
+create or replace function public.conversation_context(p_conversation uuid, p_limit integer default 30)
+returns jsonb language sql stable set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'role', case when m.direction = 'in' then 'user' else 'assistant' end,
+           'sender', m.sender, 'body', m.body, 'media', m.media, 'at', m.created_at
+         ) order by m.created_at), '[]'::jsonb)
+  from (
+    select * from public.messages where conversation_id = p_conversation and kind = 'chat'
+    order by created_at desc limit p_limit
+  ) m;
+$$;
+
+-- Jornada (014): primeira resposta e mensagens por lead só com chat.
+create or replace function public.dashboard_jornada_p(p_office uuid, p_from date DEFAULT NULL::date, p_to date DEFAULT NULL::date, p_member uuid DEFAULT NULL::uuid)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'public'
+AS $$
+  with b as (select * from public.period_bounds(p_office, p_from, p_to)),
+  coorte as (
+    select l.id, l.phase, l.created_at, public.lead_journey_stage(l.id) as etapa_atual from public.leads l, b
+    where l.office_id = p_office and l.created_at >= b.p_start and l.created_at < b.p_end
+      and (p_member is null or l.assigned_to = p_member)
+  ),
+  trocas as (
+    select e.lead_id, (e.payload->>'from')::public.case_phase as fase, e.created_at,
+           coalesce(lag(e.created_at) over (partition by e.lead_id order by e.seq), c.created_at) as inicio
+    from public.case_events e join coorte c on c.id = e.lead_id
+    where e.type = 'phase_changed'
+  ),
+  st as (
+    select s.*, public.journey_stage_agents(s.role) as agentes,
+      (select count(*) from coorte c where public.lead_reached_stage(c.id, s.role)) as n,
+      (select count(*) from coorte c where c.etapa_atual = s.role) as em_fluxo,
+      (select count(*) from coorte c where public.lead_reached_stage(c.id, s.role) and public.lead_done_stage(c.id, s.role)) as concluido,
+      (select count(distinct e.lead_id) from public.case_events e join coorte c on c.id = e.lead_id
+        where e.type = 'intervention_requested' and e.actor_agent = any (public.journey_stage_agents(s.role))) as interv_humana,
+      (select round((avg(extract(epoch from (t.created_at - t.inicio))) / 3600)::numeric, 1)
+         from trocas t where t.fase = any (s.fases) and s.role not in ('saneador','redator')) as tempo_medio_horas
+    from public.journey_stages() s
+  ),
+  topo as (select coalesce(max(n) filter (where ordem = 1), 0) as n from st)
+  select jsonb_build_object(
+    'periodo', jsonb_build_object('de', b.p_start::date, 'ate', (b.p_end - interval '1 day')::date),
+    'leads', (select count(*) from coorte),
+    'etapas', (select coalesce(jsonb_agg(jsonb_build_object(
+                 'ordem', s.ordem, 'agente', s.role, 'titulo', s.titulo, 'fases', to_jsonb(s.fases), 'agentes', to_jsonb(s.agentes),
+                 'n', s.n, 'pct_topo', case when topo.n = 0 then 0 else round(s.n::numeric / topo.n * 100) end,
+                 'concluido', s.concluido, 'em_fluxo', s.em_fluxo, 'interv_humana', s.interv_humana,
+                 'tempo_medio_horas', s.tempo_medio_horas) order by s.ordem), '[]'::jsonb) from st s, topo),
+    'primeira_resposta_min', (select round(avg(extract(epoch from (o - i)) / 60)::numeric, 1) from (
+        select (select min(m.created_at) from public.messages m join public.conversations cv on cv.id = m.conversation_id where cv.lead_id = c.id and m.direction = 'in' and m.kind = 'chat') as i,
+               (select min(m.created_at) from public.messages m join public.conversations cv on cv.id = m.conversation_id where cv.lead_id = c.id and m.direction = 'out' and m.kind = 'chat') as o
+        from coorte c) t where o is not null and i is not null),
+    'dias_ate_contrato', (select round(avg(extract(epoch from (k.signed_at - c.created_at)) / 86400)::numeric, 1)
+                          from coorte c join public.contracts k on k.lead_id = c.id and k.status = 'assinado'),
+    'mensagens_por_lead', (select round(avg(n)::numeric, 1) from (
+        select count(m.id) as n from coorte c
+        left join public.conversations cv on cv.lead_id = c.id
+        left join public.messages m on m.conversation_id = cv.id and m.kind = 'chat' group by c.id) t)
+  )
+  from b
+  where public.is_office_member(p_office);
+$$;
+
+-- Produtividade (014): mensagens por membro só com chat (nota não é mensagem ao cliente).
+create or replace function public.dashboard_produtividade_p(p_office uuid, p_from date DEFAULT NULL::date, p_to date DEFAULT NULL::date, p_member uuid DEFAULT NULL::uuid)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'public'
+AS $$
+  with b as (select * from public.period_bounds(p_office, p_from, p_to)),
+  concl as (
+    select h.* from public.human_interventions h, b
+    where h.office_id = p_office and h.status = 'resolvida'
+      and h.resolved_at >= b.p_start and h.resolved_at < b.p_end
+      and (p_member is null or h.claimed_by = p_member)
+  ),
+  nomes as (
+    select om.user_id, coalesce(pr.full_name, 'Membro') as nome
+    from public.office_members om left join public.profiles pr on pr.user_id = om.user_id
+    where om.office_id = p_office
+  ),
+  ranking as (
+    select c.claimed_by, coalesce(n.nome, 'Sem responsável') as nome, count(*) as concluidas,
+           round((avg(extract(epoch from (c.resolved_at - c.created_at))) / 3600)::numeric, 1) as tempo_medio_horas
+    from concl c left join nomes n on n.user_id = c.claimed_by
+    group by c.claimed_by, n.nome
+  ),
+  dias as (select generate_series(b.p_start, b.p_end - interval '1 day', interval '1 day')::date as dia from b)
+  select jsonb_build_object(
+    'periodo', jsonb_build_object('de', b.p_start::date, 'ate', (b.p_end - interval '1 day')::date),
+    'concluidas', (select count(*) from concl),
+    'em_andamento', (select count(*) from public.human_interventions h
+                     where h.office_id = p_office and h.status = 'em_atendimento' and (p_member is null or h.claimed_by = p_member)),
+    'pendentes', (select count(*) from public.human_interventions h where h.office_id = p_office and h.status = 'pendente'),
+    'tempo_medio_horas', (select round((avg(extract(epoch from (resolved_at - created_at))) / 3600)::numeric, 1) from concl),
+    'pessoas', (select count(distinct claimed_by) from concl where claimed_by is not null),
+    'tipos', (select count(distinct category) from concl),
+    'maior_produtor', (select jsonb_build_object('user_id', claimed_by, 'nome', nome, 'concluidas', concluidas)
+                       from ranking order by concluidas desc limit 1),
+    'por_forma', (select coalesce(jsonb_agg(jsonb_build_object('forma', forma, 'n', n,
+                    'pct', case when (select count(*) from concl) = 0 then 0 else round(n::numeric / (select count(*) from concl) * 100) end) order by n desc), '[]'::jsonb)
+                  from (select coalesce(outcome, 'nao_informada') as forma, count(*) as n from concl group by 1) t),
+    'por_tipo', (select coalesce(jsonb_agg(jsonb_build_object('tipo', tipo, 'n', n,
+                   'pct', case when (select count(*) from concl) = 0 then 0 else round(n::numeric / (select count(*) from concl) * 100) end) order by n desc), '[]'::jsonb)
+                 from (select category as tipo, count(*) as n from concl group by 1) t),
+    'ranking', (select coalesce(jsonb_agg(jsonb_build_object('user_id', claimed_by, 'nome', nome, 'concluidas', concluidas,
+                  'tempo_medio_horas', tempo_medio_horas) order by concluidas desc), '[]'::jsonb) from ranking),
+    'por_dia', (select coalesce(jsonb_agg(jsonb_build_object('dia', d.dia,
+                  'concluidas', (select count(*) from concl c where c.resolved_at::date = d.dia)) order by d.dia), '[]'::jsonb) from dias d),
+    'membros', (select coalesce(jsonb_agg(jsonb_build_object(
+                  'user_id', n.user_id, 'nome', n.nome,
+                  'takeovers', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor_user_id = n.user_id and e.type = 'takeover' and e.created_at >= b.p_start and e.created_at < b.p_end),
+                  'mensagens', (select count(*) from public.messages m, b where m.office_id = p_office and m.sent_by = n.user_id and m.kind = 'chat' and m.created_at >= b.p_start and m.created_at < b.p_end),
+                  'fases_movidas', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor_user_id = n.user_id and e.type = 'phase_changed' and e.created_at >= b.p_start and e.created_at < b.p_end),
+                  'contratos_assinados', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor_user_id = n.user_id and e.type = 'contract_signed' and e.created_at >= b.p_start and e.created_at < b.p_end)
+                ) order by n.nome), '[]'::jsonb) from nomes n),
+    'ia', jsonb_build_object(
+      'mensagens', (select count(*) from public.messages m, b where m.office_id = p_office and m.sender = 'ia' and m.created_at >= b.p_start and m.created_at < b.p_end),
+      'fases_movidas', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor = 'ia' and e.type = 'phase_changed' and e.created_at >= b.p_start and e.created_at < b.p_end),
+      'intervencoes_pedidas', (select count(*) from public.case_events e, b where e.office_id = p_office and e.actor = 'ia' and e.type = 'intervention_requested' and e.created_at >= b.p_start and e.created_at < b.p_end))
+  )
+  from b
+  where public.is_office_member(p_office);
+$$;
+
+-- Fila (007): mensagens desde a abertura da intervenção, só chat. Mesmas colunas.
+create or replace view public.v_intervention_cards
+with (security_invoker = true) as
+select
+  h.id, h.office_id, h.lead_id, h.conversation_id,
+  h.category, g.grupo, g.titulo as grupo_titulo, g.ordem as grupo_ordem,
+  h.reason, h.note, h.tags, h.priority, h.status, h.requested_by_actor,
+  h.claimed_by, pr.full_name as responsavel_nome, h.claimed_at, h.resolved_at, h.outcome, h.created_at,
+  ct.name as contact_name, ct.wa_id as contact_phone,
+  l.phase, q.faixa, q.verbas_total, l.prescricao_em,
+  h.calls_count,
+  (select count(*) from public.messages m where m.conversation_id = h.conversation_id and m.created_at >= h.created_at and m.kind = 'chat') as msgs_count,
+  (current_date - h.created_at::date) as dias
+from public.human_interventions h
+join public.leads l on l.id = h.lead_id
+join public.contacts ct on ct.id = l.contact_id
+left join public.lead_qualification q on q.lead_id = l.id
+left join public.profiles pr on pr.user_id = h.claimed_by
+cross join lateral public.intervention_group(h.category) g;
+grant select on public.v_intervention_cards to authenticated;
+
+-- Custo de aquisição (002): mensagens humanas sem as notas. Mesmas colunas.
+create or replace view public.lead_acquisition_cost
+with (security_invoker = true) as
+select
+  l.id as lead_id,
+  l.office_id,
+  count(m.id) filter (where m.sender = 'ia')                              as mensagens_ia,
+  count(m.id) filter (where m.sender = 'humano')                          as mensagens_humano,
+  coalesce(sum((m.ai_meta->>'tokens_in')::numeric), 0)                    as tokens_in,
+  coalesce(sum((m.ai_meta->>'tokens_out')::numeric), 0)                   as tokens_out,
+  coalesce(sum((m.ai_meta->>'cost_usd')::numeric), 0)                     as cost_usd
+from public.leads l
+left join public.conversations c on c.lead_id = l.id
+left join public.messages m on m.conversation_id = c.id and m.direction = 'out' and m.kind = 'chat'
+group by l.id, l.office_id;
+
+-- Destino do envio (015): só chat pendente (defesa extra; o WA 03 já filtra).
+create or replace function public.mensageria_destino(p_message uuid)
+returns table (message_id uuid, office_id uuid, provider text, body text, template jsonb, wa_id text, phone_number_id text,
+               token text, provider_config jsonb)
+language sql stable security definer set search_path = public as $$
+  select m.id, m.office_id, public.mensageria_provider(m.office_id), m.body, m.template, ct.wa_id, wn.phone_number_id,
+         case public.mensageria_provider(m.office_id)
+           when 'meta_whatsapp' then (select s.decrypted_secret from vault.decrypted_secrets s where s.name = wn.token_secret_name)
+           else public.integration_secret(m.office_id, public.mensageria_provider(m.office_id)) end,
+         (select i.config from public.integrations i where i.office_id = m.office_id and i.provider = public.mensageria_provider(m.office_id))
+  from public.messages m
+  join public.conversations c on c.id = m.conversation_id
+  join public.contacts ct on ct.id = c.contact_id
+  left join public.whatsapp_numbers wn on wn.id = c.whatsapp_number_id
+  where m.id = p_message and m.status = 'pending' and m.direction = 'out' and m.kind = 'chat';
+$$;
+
+-- -----------------------------------------------------------------------------
 -- 4. Respostas rápidas e buckets de envio
 -- Mídia de mensagem (messages.media / quick_replies): {"bucket": "respostas",
 -- "storage_path": "<office_id>/arquivo.ogg", "mime_type": "audio/ogg",
@@ -1953,6 +2158,7 @@ declare f text;
 begin
   foreach f in array array[
     'public.mensageria_envio(uuid)',
+    'public.mensageria_destino(uuid)',
     'public.scheduled_dispatch(integer)',
     'public.templates_sync_targets()',
     'public.templates_sync_apply(uuid, jsonb)',

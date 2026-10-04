@@ -8,6 +8,203 @@
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
+-- 7. Templates da Meta: sincronização e envio para aprovação (n8n 12)
+-- -----------------------------------------------------------------------------
+alter table public.wa_templates
+  add column if not exists whatsapp_number_id uuid references public.whatsapp_numbers(id) on delete set null,
+  add column if not exists components jsonb,
+  add column if not exists rejected_reason text,
+  add column if not exists last_sync_at timestamptz,
+  add column if not exists submit_requested_at timestamptz,
+  add column if not exists submitted_at timestamptz,
+  add column if not exists submit_error text;
+alter table public.wa_templates drop constraint if exists wa_templates_status_check;
+alter table public.wa_templates add constraint wa_templates_status_check
+  check (status in ('pendente','aprovado','rejeitado','pausado','desativado'));
+
+create or replace function public.wa_template_status(p_meta text)
+returns text language sql immutable set search_path = public as $$
+  select case upper(coalesce(p_meta, '')) when 'APPROVED' then 'aprovado' when 'REJECTED' then 'rejeitado'
+              when 'PAUSED' then 'pausado' when 'DISABLED' then 'desativado' else 'pendente' end;
+$$;
+
+-- Números com WABA para o GET /{waba_id}/message_templates (service_role).
+create or replace function public.templates_sync_targets()
+returns table(whatsapp_number_id uuid, office_id uuid, waba_id text, token text)
+language sql stable security definer set search_path = public as $$
+  select wn.id, wn.office_id, wn.waba_id, (select s.decrypted_secret from vault.decrypted_secrets s where s.name = wn.token_secret_name)
+  from public.whatsapp_numbers wn
+  where wn.active and wn.waba_id is not null
+    and public.mensageria_provider(wn.office_id) = 'meta_whatsapp';
+$$;
+
+-- Aplica a lista "data" da Meta. Atualiza os conhecidos e cadastra os criados direto no Gerenciador.
+create or replace function public.templates_sync_apply(p_number uuid, p_templates jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare wn public.whatsapp_numbers; t jsonb; v_body text; n_upd int := 0; n_new int := 0; v_id uuid; v_existia boolean;
+begin
+  select * into wn from public.whatsapp_numbers where id = p_number;
+  if wn.id is null then raise exception 'número não encontrado'; end if;
+  for t in select * from jsonb_array_elements(coalesce(p_templates, '[]'::jsonb)) loop
+    select c->>'text' into v_body from jsonb_array_elements(coalesce(t->'components', '[]'::jsonb)) c where upper(c->>'type') = 'BODY' limit 1;
+    select id into v_id from public.wa_templates where office_id = wn.office_id and name = t->>'name' and language = coalesce(t->>'language', 'pt_BR');
+    v_existia := v_id is not null;
+    insert into public.wa_templates (office_id, name, language, category, body, params, status, meta_id, whatsapp_number_id, components,
+                                     rejected_reason, last_sync_at, submitted_at, updated_at)
+    values (wn.office_id, t->>'name', coalesce(t->>'language', 'pt_BR'), coalesce(upper(t->>'category'), 'UTILITY'), coalesce(v_body, ''),
+            (select count(distinct x[1]) from regexp_matches(coalesce(v_body, ''), '\{\{(\d+)\}\}', 'g') x),
+            public.wa_template_status(t->>'status'), t->>'id', wn.id, t->'components',
+            nullif(t->>'rejected_reason', 'NONE'), now(), now(), now())
+    on conflict (office_id, name, language) do update
+      set status = excluded.status, meta_id = excluded.meta_id, category = excluded.category,
+          whatsapp_number_id = coalesce(public.wa_templates.whatsapp_number_id, excluded.whatsapp_number_id),
+          components = excluded.components, rejected_reason = excluded.rejected_reason, last_sync_at = now(),
+          body = case when excluded.body <> '' then excluded.body else public.wa_templates.body end,
+          submitted_at = coalesce(public.wa_templates.submitted_at, now()), submit_error = null, updated_at = now();
+    if v_existia then n_upd := n_upd + 1; else n_new := n_new + 1; end if;
+  end loop;
+  return jsonb_build_object('atualizados', n_upd, 'novos', n_new, 'office_id', wn.office_id);
+end; $$;
+
+-- Pedido de aprovação feito pelo admin; o n8n 12 envia (webhook ou varredura).
+create or replace function public.ui_template_submit(p_template uuid)
+returns public.wa_templates language plpgsql security definer set search_path = public as $$
+declare t public.wa_templates;
+begin
+  select * into t from public.wa_templates where id = p_template;
+  if t.id is null or public.member_role(t.office_id) <> 'admin' then raise exception 'template não encontrado'; end if;
+  if t.status = 'aprovado' then raise exception 'template já aprovado'; end if;
+  update public.wa_templates set submit_requested_at = now(), submit_error = null, updated_at = now()
+   where id = p_template returning * into t;
+  return t;
+end; $$;
+
+create or replace function public.templates_pending_submit()
+returns setof uuid language sql stable security definer set search_path = public as $$
+  select t.id from public.wa_templates t
+  where t.submit_requested_at is not null and (t.submitted_at is null or t.submitted_at < t.submit_requested_at)
+  order by t.submit_requested_at limit 20;
+$$;
+
+-- Corpo do POST /{waba_id}/message_templates. Só para templates pedidos por um admin.
+create or replace function public.template_submit_payload(p_template uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare t public.wa_templates; wn public.whatsapp_numbers; o public.offices; v_ex jsonb;
+begin
+  select * into t from public.wa_templates where id = p_template;
+  if t.id is null or t.submit_requested_at is null then
+    return jsonb_build_object('ok', false, 'motivo', 'template sem pedido de envio');
+  end if;
+  select * into o from public.offices where id = t.office_id;
+  select * into wn from public.whatsapp_numbers
+   where id = coalesce(t.whatsapp_number_id, (select x.id from public.whatsapp_numbers x where x.office_id = t.office_id and x.active and x.waba_id is not null order by x.created_at limit 1));
+  if wn.id is null or wn.waba_id is null then
+    return jsonb_build_object('ok', false, 'template_id', t.id, 'motivo', 'escritório sem número com WABA');
+  end if;
+  select coalesce(jsonb_agg(case g when 1 then 'Maria' when 2 then coalesce(o.name, 'Escritório') else 'exemplo' end order by g), '[]'::jsonb)
+    into v_ex from generate_series(1, greatest(t.params, 0)) g;
+  return jsonb_build_object('ok', true, 'template_id', t.id, 'whatsapp_number_id', wn.id, 'waba_id', wn.waba_id,
+    'token', (select s.decrypted_secret from vault.decrypted_secrets s where s.name = wn.token_secret_name),
+    'payload', jsonb_build_object('name', t.name, 'language', t.language, 'category', t.category,
+      'components', coalesce(t.components, jsonb_build_array(
+        case when t.params > 0 then jsonb_build_object('type', 'BODY', 'text', t.body, 'example', jsonb_build_object('body_text', jsonb_build_array(v_ex)))
+             else jsonb_build_object('type', 'BODY', 'text', t.body) end))));
+end; $$;
+
+create or replace function public.template_submitted(p_template uuid, p_meta_id text, p_status text, p_error text default null)
+returns public.wa_templates language plpgsql security definer set search_path = public as $$
+declare t public.wa_templates;
+begin
+  update public.wa_templates
+     set meta_id = coalesce(p_meta_id, meta_id),
+         status = case when p_error is not null then status else public.wa_template_status(p_status) end,
+         submitted_at = case when p_error is null then now() else submitted_at end,
+         submit_requested_at = case when p_error is null then submit_requested_at else null end,
+         submit_error = left(p_error, 500), updated_at = now()
+   where id = p_template returning * into t;
+  return t;
+end; $$;
+
+-- -----------------------------------------------------------------------------
+-- 8. Mesclar conversas (mesmo escritório). Mantém p_keep; p_from é arquivada.
+-- Leads diferentes: move mensagens, tarefas e provas; mesmo lead: só mensagens.
+-- -----------------------------------------------------------------------------
+create or replace function public.conversation_merge(p_keep uuid, p_from uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare k public.conversations; f public.conversations; n_msg int := 0; n_task int := 0; n_ev int := 0; v_me uuid := auth.uid();
+begin
+  if p_keep = p_from then raise exception 'escolha duas conversas diferentes'; end if;
+  k := public.conversation_guard(p_keep);
+  f := public.conversation_guard(p_from);
+  if k.office_id <> f.office_id then raise exception 'conversas de escritórios diferentes'; end if;
+  if k.lead_id <> f.lead_id
+     and exists (select 1 from public.contracts x where x.lead_id = k.lead_id and x.status = 'assinado')
+     and exists (select 1 from public.contracts x where x.lead_id = f.lead_id and x.status = 'assinado') then
+    raise exception 'os dois casos têm contrato assinado: não é possível mesclar';
+  end if;
+
+  update public.messages set conversation_id = p_keep where conversation_id = p_from;
+  get diagnostics n_msg = row_count;
+  if k.lead_id <> f.lead_id then
+    update public.tasks set lead_id = k.lead_id where lead_id = f.lead_id;
+    get diagnostics n_task = row_count;
+    update public.evidences set lead_id = k.lead_id where lead_id = f.lead_id;
+    get diagnostics n_ev = row_count;
+  end if;
+
+  update public.conversations c
+     set last_message_at = x.ult, last_message_preview = x.prev,
+         window_expires_at = greatest(k.window_expires_at, f.window_expires_at),
+         unread_count = k.unread_count + f.unread_count
+    from (select max(m.created_at) as ult,
+                 (select left(coalesce(m2.body, '[mídia]'), 140) from public.messages m2 where m2.conversation_id = p_keep and m2.kind = 'chat' order by m2.created_at desc limit 1) as prev
+            from public.messages m where m.conversation_id = p_keep and m.kind = 'chat') x
+   where c.id = p_keep;
+  update public.conversations set status = 'archived', unread_count = 0, last_message_preview = 'Mesclada em outra conversa' where id = p_from;
+
+  perform public.conversation_event(p_keep, 'conversation_merged', 'Conversa mesclada por ' || public.user_nome(v_me) || ' (' || n_msg || ' mensagens)',
+                                    'humano', v_me, jsonb_build_object('from', p_from, 'from_lead', f.lead_id, 'mensagens', n_msg, 'tarefas', n_task, 'provas', n_ev));
+  perform public.conversation_event(p_from, 'conversation_merged_into', 'Mesclada na conversa principal por ' || public.user_nome(v_me),
+                                    'humano', v_me, jsonb_build_object('into', p_keep, 'into_lead', k.lead_id));
+  return jsonb_build_object('keep', p_keep, 'from', p_from, 'mensagens', n_msg, 'tarefas', n_task, 'provas', n_ev);
+end; $$;
+
+-- -----------------------------------------------------------------------------
+-- 9. Origem do anúncio (Click-to-WhatsApp)
+-- -----------------------------------------------------------------------------
+create or replace function public.lead_set_referral(p_lead uuid, p_referral jsonb, p_new_lead boolean default false)
+returns public.leads language plpgsql security definer set search_path = public as $$
+declare l public.leads; v_ref jsonb;
+begin
+  select * into l from public.leads where id = p_lead;
+  if l.id is null or p_referral is null or p_referral = 'null'::jsonb then return l; end if;
+  if l.ad_referral is not null then return l; end if;            -- vale o primeiro anúncio
+  v_ref := jsonb_strip_nulls(jsonb_build_object(
+    'source_id', p_referral->>'source_id', 'source_type', p_referral->>'source_type', 'headline', p_referral->>'headline',
+    'body', p_referral->>'body', 'ctwa_clid', p_referral->>'ctwa_clid', 'source_url', p_referral->>'source_url',
+    'media_type', p_referral->>'media_type', 'recebido_em', now()));
+  update public.leads set ad_referral = v_ref, source = case when p_new_lead then 'meta_ads' else source end
+   where id = p_lead returning * into l;
+  perform public.log_event(l.office_id, l.id, 'ad_referral', 'sistema', null, null, v_ref);
+  return l;
+end; $$;
+
+create or replace view public.v_marketing_anuncios with (security_invoker = true) as
+select l.office_id,
+       l.ad_referral->>'source_id' as anuncio_id,
+       max(l.ad_referral->>'headline') as anuncio_titulo,
+       max(l.ad_referral->>'source_type') as tipo,
+       max(l.ad_referral->>'source_url') as url,
+       count(*) as leads,
+       count(*) filter (where exists (select 1 from public.lead_qualification q where q.lead_id = l.id and q.passed)) as qualificados,
+       count(*) filter (where exists (select 1 from public.contracts k where k.lead_id = l.id and k.status = 'assinado')) as assinados,
+       min(l.created_at) as primeiro_lead_em, max(l.created_at) as ultimo_lead_em
+from public.leads l
+where l.ad_referral is not null
+group by l.office_id, l.ad_referral->>'source_id';
+grant select on public.v_marketing_anuncios to authenticated;
+
+-- -----------------------------------------------------------------------------
 -- 1b. Etiquetas na saída do agente: apply_agent_effects ganha p_tags (11º).
 -- A versão de 10 parâmetros sai (a chamada com 10 continua valendo: p_tags tem default).
 -- -----------------------------------------------------------------------------
@@ -177,224 +374,6 @@ update public.agent_prompts p
    and p.system_prompt like '%- Saída: SOMENTE o JSON no formato que o sistema pede.%'
    and p.system_prompt not like '%- Etiquetas: se a conversa deixar claro%';
 
--- -----------------------------------------------------------------------------
--- 12. Modelos de petição editáveis pelo escritório
--- piece_templates continua interna (sem policy para o escritório). O escritório
--- edita por RPC: a edição vira uma linha própria (office_id, code) que sobrepõe
--- o padrão; restaurar apaga a sobreposição. Toda gravação gera uma versão.
--- -----------------------------------------------------------------------------
-create table if not exists public.piece_template_versions (
-  id        uuid primary key default gen_random_uuid(),
-  office_id uuid not null references public.offices(id) on delete cascade,
-  code      text not null,
-  versao    int not null,
-  acao      text not null default 'salvar' check (acao in ('salvar','restaurar')),
-  name      text, tese text, kind text, body text, required boolean, ordem int, active boolean,
-  saved_by  uuid references auth.users(id),
-  saved_at  timestamptz not null default now(),
-  unique (office_id, code, versao)
-);
-alter table public.piece_template_versions enable row level security;
-drop policy if exists piece_template_versions_select on public.piece_template_versions;
-create policy piece_template_versions_select on public.piece_template_versions for select to authenticated
-  using (public.is_office_member(office_id) and public.member_role(office_id) in ('admin','advogado'));
--- escrita só pelas RPCs
-
--- Teses próprias do escritório: tese do briefing → código do modelo.
-create table if not exists public.piece_tese_aliases (
-  office_id uuid not null references public.offices(id) on delete cascade,
-  tese      text not null,
-  code      text not null,
-  primary key (office_id, tese, code)
-);
-alter table public.piece_tese_aliases enable row level security;
-drop policy if exists piece_tese_aliases_select on public.piece_tese_aliases;
-create policy piece_tese_aliases_select on public.piece_tese_aliases for select to authenticated
-  using (public.is_office_member(office_id));
-
-create or replace function public.piece_tese_codes_office(p_office uuid, p_teses text[])
-returns text[] language sql stable set search_path = public as $$
-  select coalesce(array_agg(distinct c), '{}') from (
-    select unnest(public.piece_tese_codes(p_teses)) as c
-    union all
-    select upper(a.code) from public.piece_tese_aliases a
-    join unnest(coalesce(p_teses, '{}')) as u(tt) on lower(u.tt) = a.tese
-    where a.office_id = p_office
-  ) z where c is not null;
-$$;
-
--- Modelo vigente por código (escritório sobrepõe o padrão; a sobreposição
--- inativa desliga o padrão para o escritório).
-create or replace function public.piece_templates_vigentes(p_office uuid)
-returns setof public.piece_templates language sql stable security definer set search_path = public as $$
-  select distinct on (pt.code) pt.* from public.piece_templates pt
-  where (pt.office_id = p_office or pt.office_id is null) and pt.code is not null
-  order by pt.code, pt.office_id nulls last;
-$$;
-
--- piece_render (016) com teses do escritório e sobreposição inativa. Mesma assinatura.
-create or replace function public.piece_render(p_piece uuid)
-returns jsonb language plpgsql stable security definer set search_path = public as $$
-declare
-  pc public.pieces; v_teses text[]; v_codes text[]; v_texto text; v_ctx jsonb; v_out text;
-  v_blocos text[]; v_tpl_teses text[];
-begin
-  select * into pc from public.pieces where id = p_piece;
-  if pc.id is null then raise exception 'peça % não existe', p_piece; end if;
-  select array(select distinct x from unnest(coalesce(b.teses, '{}') || array[pc.tese]) x where x is not null)
-    into v_teses from (select 1) z left join public.briefings b on b.lead_id = pc.lead_id;
-  v_codes := public.piece_tese_codes_office(pc.office_id, v_teses);
-
-  with tpl as (
-    select t.kind, t.code, t.ordem, t.body from public.piece_templates_vigentes(pc.office_id) t
-    where t.active
-      and ((t.kind = 'bloco' and t.required)
-        or (t.kind = 'tese' and upper(t.code) = any (v_codes) and t.body not like '%{{cabecalho}}%'))
-  ), corte as (
-    select coalesce((select ordem from tpl where kind = 'bloco' and code = 'ABERTURA_PEDIDOS'),
-                    (select max(ordem) from tpl where kind = 'bloco')) as v
-  ), x as (
-    select tpl.*, case when kind = 'tese' then 2 when corte.v is null or ordem < corte.v then 1 else 3 end as grupo from tpl, corte
-  )
-  select string_agg(body, E'\n\n' order by grupo, ordem, code),
-         array_agg(code order by grupo, ordem, code) filter (where kind = 'bloco'),
-         array_agg(code order by grupo, ordem, code) filter (where kind = 'tese')
-    into v_texto, v_blocos, v_tpl_teses
-  from x;
-
-  v_ctx := public.piece_fill_context(pc.lead_id);
-  v_out := public.piece_fill_text(v_texto, v_ctx);
-  return jsonb_build_object(
-    'piece_id', pc.id, 'lead_id', pc.lead_id,
-    'texto', v_out,
-    'blocos', to_jsonb(coalesce(v_blocos, '{}')), 'teses', to_jsonb(coalesce(v_tpl_teses, '{}')), 'teses_pedidas', to_jsonb(v_teses),
-    'ia', (select coalesce(jsonb_agg(jsonb_build_object('code', m.code, 'descricao', p.descricao, 'formato', p.formato) order by m.code), '[]'::jsonb)
-             from (select distinct x[1] as code from regexp_matches(v_out, '\{\{IA:([^{}]+)\}\}', 'g') x) m
-             left join public.piece_placeholders p on p.code = m.code),
-    'manual', (select coalesce(jsonb_agg(jsonb_build_object('code', m.code, 'descricao', p.descricao) order by m.code), '[]'::jsonb)
-                 from (select distinct x[1] as code from regexp_matches(v_out, '\[PREENCHER: ([^\]]+)\]', 'g') x) m
-                 left join public.piece_placeholders p on p.code = m.code));
-end; $$;
-
--- {{X}} usados no texto e os que o sistema não conhece ({{IA:...}} é campo da IA).
-create or replace function public.modelo_placeholders(p_body text)
-returns table(usados text[], desconhecidos text[]) language sql stable set search_path = public as $$
-  with u as (select distinct x[1] as code from regexp_matches(coalesce(p_body, ''), '\{\{\s*([^{}]+?)\s*\}\}', 'g') x)
-  select coalesce(array_agg(code order by code), '{}'),
-         coalesce(array_agg(code order by code) filter (where code not like 'IA:%'
-                    and not exists (select 1 from public.piece_placeholders p where p.code = u.code)), '{}')
-  from u;
-$$;
-
-create or replace function public.modelos_guard(p_office uuid)
-returns void language plpgsql stable security definer set search_path = public as $$
-begin
-  if auth.uid() is null or coalesce(public.member_role(p_office), '') not in ('admin','advogado') then
-    raise exception 'só admin ou advogado do escritório edita modelos';
-  end if;
-end; $$;
-
-create or replace function public.ui_placeholders()
-returns table(code text, fonte text, formato text, se_vazio text, descricao text, laquila boolean)
-language sql stable security definer set search_path = public as $$
-  select p.code, p.fonte, p.formato, p.se_vazio, p.descricao, p.laquila from public.piece_placeholders p order by p.laquila desc, p.code;
-$$;
-
-create or replace function public.ui_modelos(p_office uuid)
-returns table(code text, name text, tese text, kind text, required boolean, ordem int, active boolean, body text, origem text,
-              tem_padrao boolean, placeholders text[], desconhecidos text[], updated_at timestamptz)
-language plpgsql stable security definer set search_path = public as $$
-begin
-  perform public.modelos_guard(p_office);
-  return query
-  select t.code, t.name, t.tese, t.kind, t.required, t.ordem, t.active, t.body,
-         case when t.office_id is null then 'padrao' else 'escritorio' end,
-         exists (select 1 from public.piece_templates g where g.office_id is null and g.code = t.code),
-         mp.usados, mp.desconhecidos, t.updated_at
-  from public.piece_templates_vigentes(p_office) t
-  cross join lateral public.modelo_placeholders(t.body) mp
-  order by t.kind, t.ordem, t.code;
-end; $$;
-
-create or replace function public.modelo_versionar(p_office uuid, p_code text, p_acao text)
-returns int language plpgsql security definer set search_path = public as $$
-declare t public.piece_templates; v int;
-begin
-  select * into t from public.piece_templates_vigentes(p_office) x where x.code = p_code;
-  select coalesce(max(versao), 0) + 1 into v from public.piece_template_versions where office_id = p_office and code = p_code;
-  insert into public.piece_template_versions (office_id, code, versao, acao, name, tese, kind, body, required, ordem, active, saved_by)
-  values (p_office, p_code, v, p_acao, t.name, t.tese, t.kind, t.body, t.required, t.ordem, t.active, auth.uid());
-  return v;
-end; $$;
-
-create or replace function public.ui_modelo_salvar(p_office uuid, p_code text, p_name text, p_tese text, p_kind text, p_body text,
-                                                   p_required boolean default null, p_ordem int default null, p_active boolean default true)
-returns jsonb language plpgsql security definer set search_path = public as $$
-declare
-  v_code text := upper(regexp_replace(btrim(coalesce(p_code, '')), '[^A-Za-z0-9_]+', '_', 'g'));
-  g public.piece_templates; o public.piece_templates; v_novo boolean; v int; mp record; v_tese text;
-begin
-  perform public.modelos_guard(p_office);
-  if v_code = '' then raise exception 'informe o código do modelo'; end if;
-  if coalesce(btrim(p_body), '') = '' then raise exception 'o texto do modelo está vazio'; end if;
-  select * into g from public.piece_templates where office_id is null and code = v_code;
-  select * into o from public.piece_templates where office_id = p_office and code = v_code;
-  v_novo := g.id is null and o.id is null;
-  if coalesce(p_kind, g.kind, o.kind, 'tese') not in ('tese','bloco') then raise exception 'tipo inválido: use tese ou bloco'; end if;
-  v_tese := lower(btrim(coalesce(nullif(btrim(p_tese), ''), o.tese, g.tese, v_code)));
-
-  if o.id is null then
-    insert into public.piece_templates (office_id, code, name, tese, kind, body, required, ordem, active, required_evidence)
-    values (p_office, v_code, coalesce(nullif(btrim(p_name), ''), g.name, v_code), v_tese, coalesce(p_kind, g.kind, 'tese'), p_body,
-            coalesce(p_required, g.required, false), coalesce(p_ordem, g.ordem, 100), coalesce(p_active, true),
-            coalesce(g.required_evidence, '[]'::jsonb))
-    returning * into o;
-  else
-    update public.piece_templates
-       set name = coalesce(nullif(btrim(p_name), ''), name), tese = v_tese, kind = coalesce(p_kind, kind), body = p_body,
-           required = coalesce(p_required, required), ordem = coalesce(p_ordem, ordem), active = coalesce(p_active, active), updated_at = now()
-     where id = o.id returning * into o;
-  end if;
-
-  if o.kind = 'tese' and g.id is null then
-    insert into public.piece_tese_aliases (office_id, tese, code) values (p_office, v_tese, v_code) on conflict do nothing;
-  end if;
-  v := public.modelo_versionar(p_office, v_code, 'salvar');
-  select * into mp from public.modelo_placeholders(p_body);
-  return jsonb_build_object('ok', true, 'code', v_code, 'origem', 'escritorio', 'novo', v_novo, 'versao', v,
-    'placeholders', to_jsonb(mp.usados), 'desconhecidos', to_jsonb(mp.desconhecidos),
-    'avisos', (select coalesce(jsonb_agg('Placeholder desconhecido: {{' || d || '}} (vai sair como está na peça)'), '[]'::jsonb)
-                 from unnest(mp.desconhecidos) d));
-end; $$;
-
-create or replace function public.ui_modelo_restaurar(p_office uuid, p_code text)
-returns jsonb language plpgsql security definer set search_path = public as $$
-declare g public.piece_templates; o public.piece_templates; v int;
-begin
-  perform public.modelos_guard(p_office);
-  select * into g from public.piece_templates where office_id is null and code = upper(p_code);
-  select * into o from public.piece_templates where office_id = p_office and code = upper(p_code);
-  if o.id is null then return jsonb_build_object('ok', true, 'code', upper(p_code), 'origem', 'padrao', 'alterado', false); end if;
-  if g.id is null then raise exception 'modelo próprio do escritório, sem padrão para restaurar: desative-o'; end if;
-  update public.pieces set template_id = g.id where template_id = o.id;
-  delete from public.piece_templates where id = o.id;
-  v := public.modelo_versionar(p_office, g.code, 'restaurar');
-  return jsonb_build_object('ok', true, 'code', g.code, 'origem', 'padrao', 'alterado', true, 'versao', v);
-end; $$;
-
-create or replace function public.ui_modelo_versoes(p_office uuid, p_code text)
-returns table(versao int, acao text, name text, tese text, kind text, body text, required boolean, ordem int, active boolean,
-              saved_by uuid, saved_by_nome text, saved_at timestamptz)
-language plpgsql stable security definer set search_path = public as $$
-begin
-  perform public.modelos_guard(p_office);
-  return query
-  select v.versao, v.acao, v.name, v.tese, v.kind, v.body, v.required, v.ordem, v.active, v.saved_by,
-         case when v.saved_by is not null then public.user_nome(v.saved_by) end, v.saved_at
-  from public.piece_template_versions v where v.office_id = p_office and v.code = upper(p_code)
-  order by v.versao desc;
-end; $$;
-
 -- ---------- Verificação da parte 017e: deve voltar uma linha com resultado = OK
 select '017e' as parte,
        case when bool_and(ok) then 'OK' else 'FALTOU: ' || string_agg(item, ', ') filter (where not ok) end as resultado,
@@ -402,17 +381,21 @@ select '017e' as parte,
 from (values
     ('função agent_tags_context', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'agent_tags_context')),
     ('função apply_agent_effects', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'apply_agent_effects')),
-    ('função modelo_placeholders', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'modelo_placeholders')),
-    ('função modelo_versionar', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'modelo_versionar')),
-    ('função modelos_guard', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'modelos_guard')),
-    ('função piece_render', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'piece_render')),
-    ('função piece_templates_vigentes', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'piece_templates_vigentes')),
-    ('função piece_tese_codes_office', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'piece_tese_codes_office')),
-    ('função ui_modelo_restaurar', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'ui_modelo_restaurar')),
-    ('função ui_modelo_salvar', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'ui_modelo_salvar')),
-    ('função ui_modelo_versoes', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'ui_modelo_versoes')),
-    ('função ui_modelos', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'ui_modelos')),
-    ('função ui_placeholders', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'ui_placeholders')),
-    ('tabela piece_template_versions', to_regclass('public.piece_template_versions') is not null),
-    ('tabela piece_tese_aliases', to_regclass('public.piece_tese_aliases') is not null)
+    ('função conversation_merge', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'conversation_merge')),
+    ('função lead_set_referral', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'lead_set_referral')),
+    ('função template_submit_payload', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'template_submit_payload')),
+    ('função template_submitted', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'template_submitted')),
+    ('função templates_pending_submit', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'templates_pending_submit')),
+    ('função templates_sync_apply', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'templates_sync_apply')),
+    ('função templates_sync_targets', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'templates_sync_targets')),
+    ('função ui_template_submit', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'ui_template_submit')),
+    ('função wa_template_status', exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'wa_template_status')),
+    ('view v_marketing_anuncios', to_regclass('public.v_marketing_anuncios') is not null),
+    ('coluna wa_templates.whatsapp_number_id', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'whatsapp_number_id')),
+    ('coluna wa_templates.components', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'components')),
+    ('coluna wa_templates.rejected_reason', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'rejected_reason')),
+    ('coluna wa_templates.last_sync_at', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'last_sync_at')),
+    ('coluna wa_templates.submit_requested_at', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'submit_requested_at')),
+    ('coluna wa_templates.submitted_at', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'submitted_at')),
+    ('coluna wa_templates.submit_error', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wa_templates' and column_name = 'submit_error'))
 ) as v(item, ok);

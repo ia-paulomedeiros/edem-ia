@@ -29,6 +29,9 @@
 -- 11. Mensagem não suportada (WA 02) — só fluxo; nada no banco além do texto.
 -- 12. Modelos de petição editáveis pelo escritório (sobreposição + versões).
 --
+-- Contexto da IA e métricas leem só kind = 'chat' (seção 3f); nota e evento nunca
+-- entram no que o agente vê nem no que se mede como conversa.
+--
 -- Compatibilidade: "conversa ativa" passa a ser status in (open, waiting,
 -- in_service) — ai_should_reply, followup_queue, run_monitors e
 -- send_manual_message foram redefinidos. v_conversas traz status_legado

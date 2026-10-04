@@ -126,6 +126,8 @@ begin
   select * into c from public.conversations where id = v_conv;
   assert m.kind = 'nota' and m.status = 'sent' and c.last_message_preview = v_prev, 'nota não mexe na prévia';
   assert (public.mensageria_envio(m.id))->>'skip' = 'true', 'WA 03 ignora nota';
+  assert not exists (select 1 from jsonb_array_elements(public.conversation_context(v_conv, 50)) x
+                     where x->>'body' = 'Cliente parece ter caso de gestante'), 'nota interna não entra no contexto da IA';
   -- mark_read: case_event só com não lidas
   n := (select count(*) from public.case_events where conversation_id = v_conv and type = 'conversation_read');
   perform public.conversation_mark_read(v_conv);
@@ -175,6 +177,9 @@ begin
   assert (select count(*) from public.case_events where conversation_id = v_conv and type in
           ('conversation_assigned','conversation_transferred','takeover','ai_released','conversation_closed','conversation_reopened','conversation_archived')) >= 8, 'case_events das RPCs';
   assert (select bool_and(sender = 'sistema' and status = 'sent' and direction = 'out') from public.messages where conversation_id = v_conv and kind = 'evento'), 'evento = sistema, nunca pendente';
+  assert jsonb_array_length(public.conversation_context(v_conv, 500)) = (select count(*) from public.messages where conversation_id = v_conv and kind = 'chat')
+     and not exists (select 1 from jsonb_array_elements(public.conversation_context(v_conv, 500)) x where x->>'body' like 'Conversa %' or x->>'body' like 'Atendimento finalizado%'),
+     'contexto da IA só com chat (sem mensagens de evento)';
 end $$;
 set request.jwt.claim.sub = '';
 do $$
@@ -396,6 +401,46 @@ do $$ begin
   assert (select count(*) from public.notifications where read_at is null) = 0, 'nenhuma não lida';
 end $$;
 reset role;
+
+-- =============================================================================
+-- Métricas só com chat: nota e evento antes da primeira mensagem não mudam nada
+-- =============================================================================
+set request.jwt.claim.sub = '77777777-7777-7777-7777-777777777777';   -- Ana
+do $$
+declare e uuid := 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'; r jsonb; v_conv uuid; v_lead uuid;
+        j1 jsonb; j2 jsonb; p1 jsonb; p2 jsonb; h1 bigint; h2 bigint; err text;
+begin
+  r := public.ingest_inbound('PNID-E1', '5511944444004', 'Paula Métrica', 'wamid.metrica.1', 'Oi', null, now() - interval '30 minutes');
+  v_conv := (r->>'conversation_id')::uuid; v_lead := (r->>'lead_id')::uuid;
+  insert into public.messages (office_id, conversation_id, direction, sender, body, status, created_at, ai_meta)
+  values (e, v_conv, 'out', 'ia', 'Olá, Paula!', 'sent', now() - interval '29 minutes', '{"agent_role":"recepcao"}');
+  j1 := public.dashboard_jornada_p(e, null, null);
+  p1 := public.dashboard_produtividade_p(e, null, null);
+  select mensagens_humano into h1 from public.lead_acquisition_cost where lead_id = v_lead;
+  assert (j1->>'primeira_resposta_min') is not null and (j1->>'mensagens_por_lead') is not null, 'jornada calculada: ' || j1::text;
+
+  -- nota e evento duas horas ANTES da primeira mensagem do contato
+  insert into public.messages (office_id, conversation_id, direction, sender, body, status, kind, sent_by, created_at)
+  values (e, v_conv, 'out', 'humano', 'Nota antiga da equipe', 'sent', 'nota', '77777777-7777-7777-7777-777777777777', now() - interval '2 hours');
+  insert into public.messages (office_id, conversation_id, direction, sender, body, status, kind, created_at)
+  values (e, v_conv, 'out', 'sistema', 'Conversa atribuída', 'sent', 'evento', now() - interval '2 hours');
+
+  j2 := public.dashboard_jornada_p(e, null, null);
+  p2 := public.dashboard_produtividade_p(e, null, null);
+  select mensagens_humano into h2 from public.lead_acquisition_cost where lead_id = v_lead;
+  assert j2->'primeira_resposta_min' = j1->'primeira_resposta_min', 'nota não altera primeira_resposta_min: ' || (j1->>'primeira_resposta_min') || ' → ' || (j2->>'primeira_resposta_min');
+  assert j2->'mensagens_por_lead' = j1->'mensagens_por_lead', 'nota não altera mensagens_por_lead: ' || (j1->>'mensagens_por_lead') || ' → ' || (j2->>'mensagens_por_lead');
+  assert (select x->'mensagens' from jsonb_array_elements(p2->'membros') x where x->>'user_id' = '77777777-7777-7777-7777-777777777777')
+       = (select x->'mensagens' from jsonb_array_elements(p1->'membros') x where x->>'user_id' = '77777777-7777-7777-7777-777777777777'), 'nota não conta como mensagem do membro';
+  assert h2 = h1, 'nota não conta no custo de aquisição';
+  assert jsonb_array_length(public.conversation_context(v_conv)) = 2, 'contexto: só a mensagem do contato e a resposta';
+
+  -- a constraint impede nota/evento com remetente errado
+  begin
+    insert into public.messages (office_id, conversation_id, direction, sender, body, status, kind) values (e, v_conv, 'out', 'ia', 'x', 'sent', 'nota');
+    assert false, 'nota da IA deveria falhar';
+  exception when check_violation then null; end;
+end $$;
 
 -- =============================================================================
 -- Monitor "Cliente esperando"
